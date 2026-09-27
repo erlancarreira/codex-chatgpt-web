@@ -370,6 +370,27 @@ export async function captureSystemBrowserLoginToFile(
   atomicWriteFile(markerPath, `${JSON.stringify(capture.marker)}\n`);
 }
 
+export async function importBrowserLoginStorageState(
+  config: AppConfig,
+  storageState: BrowserLoginStorageState,
+): Promise<BrowserLoginResult> {
+  if (!existsSync(config.chromeExecutablePath)) {
+    throw new Error(`Google Chrome was not found at ${config.chromeExecutablePath}. Pass --chrome with its executable path.`);
+  }
+  mkdirSync(dirname(config.storageStatePath), { recursive: true, mode: 0o700 });
+  const sanitized = sanitizeBrowserLoginStorageState(storageState);
+  const inspected = await inspectStoredState(config, sanitized);
+  atomicWriteFile(config.storageStatePath, `${JSON.stringify(sanitized)}\n`);
+  writeVerificationMarker(config.storageStatePath, inspected);
+  return {
+    storageStatePath: config.storageStatePath,
+    accountSurfaceUrl: inspected.url,
+    solAvailable: inspected.solAvailable,
+    extraHighAvailable: inspected.extraHighAvailable === true,
+    proAvailable: inspected.proAvailable,
+  };
+}
+
 export async function loginToChatGpt(
   config: AppConfig,
   options: { timeoutMs?: number } = {},

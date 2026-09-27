@@ -22,6 +22,7 @@ import {
 } from "./codex-integration";
 import { formatDoctorReport, runDoctor } from "./doctor";
 import { runChatGptMcpMain } from "./adapters/chatgpt-web/mcp-main";
+import { prepareNativeRuntime } from "./native-runtime";
 import { runCommand } from "./process";
 import { startServer } from "./server";
 import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, interruptActiveTurn, restartService, startService, stopService, uninstallService } from "./service";
@@ -602,8 +603,23 @@ async function main(): Promise<void> {
     }
   } else if (command === "serve") {
     assertNoArgs(args);
-    const config = loadConfig();
+    let config = loadConfig();
+    if (process.env.CODEX_CHATGPT_WEB_NATIVE === "1") {
+      config = await prepareNativeRuntime(config);
+    }
     const server = startServer(config);
+    const parentPid = Number(process.env.CODEX_CHATGPT_WEB_PARENT_PID);
+    if (Number.isSafeInteger(parentPid) && parentPid > 0) {
+      const parentWatch = setInterval(() => {
+        try {
+          process.kill(parentPid, 0);
+        } catch {
+          clearInterval(parentWatch);
+          process.exit(0);
+        }
+      }, 2_000);
+      parentWatch.unref();
+    }
     stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
     await new Promise<void>(() => {});
   } else if (command === "dev") await runDevCommand(args);

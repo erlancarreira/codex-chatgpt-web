@@ -1,0 +1,111 @@
+import { describe, expect, test } from "bun:test";
+import { defaultConfig, type AppConfig } from "../src/config";
+import {
+  prepareNativeRuntime,
+  type NativeRuntimeDependencies,
+} from "../src/native-runtime";
+import type { LauncherBrowserConnection } from "../src/launcher-browser-host";
+
+function config(overrides: Partial<AppConfig> = {}): AppConfig {
+  return {
+    ...defaultConfig("full"),
+    browserInteractionMode: "automatic",
+    ...overrides,
+  };
+}
+
+function dependencies(
+  overrides: Partial<NativeRuntimeDependencies> = {},
+): NativeRuntimeDependencies {
+  return {
+    browserLoginStateExists: () => true,
+    connectLauncherBrowserHost: async () => {
+      throw new Error("unexpected launcher connection");
+    },
+    importBrowserLoginStorageState: async migrated => ({
+      storageStatePath: migrated.storageStatePath,
+      accountSurfaceUrl: "https://chatgpt.com/",
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: true,
+    }),
+    saveConfig: () => {},
+    ...overrides,
+  };
+}
+
+describe("native Codex runtime preparation", () => {
+  test("reuses an already migrated managed Chrome session", async () => {
+    const original = config({ browserHost: "managed-chrome" });
+    const prepared = await prepareNativeRuntime(original, dependencies());
+
+    expect(prepared).toBe(original);
+  });
+
+  test("fails closed when the managed Chrome session is missing", async () => {
+    const original = config({ browserHost: "managed-chrome" });
+    const deps = dependencies({ browserLoginStateExists: () => false });
+
+    await expect(prepareNativeRuntime(original, deps)).rejects.toThrow(
+      "requires a stored ChatGPT browser session",
+    );
+  });
+
+  test("migrates a launcher-owned session and persists managed Chrome capabilities", async () => {
+    const original = config({
+      browserHost: "launcher",
+      browserHostDescriptorPath: "C:\\runtime\\launcher-browser.json",
+      solAvailable: false,
+      extraHighAvailable: false,
+      proAvailable: false,
+    });
+    const storageState = { cookies: [], origins: [] };
+    let closed = false;
+    let importedConfig: AppConfig | undefined;
+    let savedConfig: AppConfig | undefined;
+
+    const connection = {
+      context: {
+        storageState: async () => storageState,
+      },
+      browser: {
+        close: async () => {
+          closed = true;
+        },
+      },
+    } as unknown as LauncherBrowserConnection;
+
+    const deps = dependencies({
+      connectLauncherBrowserHost: async path => {
+        expect(path).toBe("C:\\runtime\\launcher-browser.json");
+        return connection;
+      },
+      importBrowserLoginStorageState: async (migrated, imported) => {
+        importedConfig = structuredClone(migrated);
+        expect(imported).toEqual(storageState);
+        return {
+          storageStatePath: migrated.storageStatePath,
+          accountSurfaceUrl: "https://chatgpt.com/",
+          solAvailable: true,
+          extraHighAvailable: true,
+          proAvailable: true,
+        };
+      },
+      saveConfig: migrated => {
+        savedConfig = structuredClone(migrated);
+      },
+    });
+
+    const prepared = await prepareNativeRuntime(original, deps);
+
+    expect(closed).toBe(true);
+    expect(original.browserHost).toBe("launcher");
+    expect(prepared.browserHost).toBe("managed-chrome");
+    expect(prepared.browserHostDescriptorPath).toBeUndefined();
+    expect(prepared.solAvailable).toBe(true);
+    expect(prepared.extraHighAvailable).toBe(true);
+    expect(prepared.proAvailable).toBe(true);
+    expect(importedConfig?.browserHost).toBe("managed-chrome");
+    expect(savedConfig).toEqual(prepared);
+  });
+});
