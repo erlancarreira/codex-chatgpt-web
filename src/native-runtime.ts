@@ -1,29 +1,26 @@
 import {
+  adoptTrustedBrowserLoginStorageState,
   browserLoginStateExists,
-  importBrowserLoginStorageState,
   type BrowserLoginResult,
   type BrowserLoginStorageState,
 } from "./browser-login";
 import { saveConfig, type AppConfig } from "./config";
-import {
-  connectLauncherBrowserHost,
-  type LauncherBrowserConnection,
-} from "./launcher-browser-host";
+import { exportLauncherBrowserStorageState } from "./launcher-browser-host";
 
 export interface NativeRuntimeDependencies {
   browserLoginStateExists(config: AppConfig): boolean;
-  connectLauncherBrowserHost(path: string): Promise<LauncherBrowserConnection>;
-  importBrowserLoginStorageState(
+  exportLauncherBrowserStorageState(path: string): Promise<BrowserLoginStorageState>;
+  adoptTrustedBrowserLoginStorageState(
     config: AppConfig,
     storageState: BrowserLoginStorageState,
-  ): Promise<BrowserLoginResult>;
+  ): BrowserLoginResult;
   saveConfig(config: AppConfig): void;
 }
 
 const defaultDependencies: NativeRuntimeDependencies = {
   browserLoginStateExists,
-  connectLauncherBrowserHost,
-  importBrowserLoginStorageState,
+  exportLauncherBrowserStorageState,
+  adoptTrustedBrowserLoginStorageState,
   saveConfig,
 };
 
@@ -49,19 +46,13 @@ export async function prepareNativeRuntime(
     throw new Error("Launcher browser descriptor is missing; cannot migrate its ChatGPT session.");
   }
 
-  const connection = await dependencies.connectLauncherBrowserHost(descriptorPath);
-  let storageState: BrowserLoginStorageState;
-  try {
-    storageState = await connection.context.storageState();
-  } finally {
-    await connection.browser.close().catch(() => {});
-  }
+  const storageState = await dependencies.exportLauncherBrowserStorageState(descriptorPath);
 
   const migrated = structuredClone(config);
   migrated.browserHost = "managed-chrome";
   delete migrated.browserHostDescriptorPath;
 
-  const login = await dependencies.importBrowserLoginStorageState(migrated, storageState);
+  const login = dependencies.adoptTrustedBrowserLoginStorageState(migrated, storageState);
   migrated.solAvailable = login.solAvailable;
   migrated.extraHighAvailable = login.extraHighAvailable;
   migrated.proAvailable = login.proAvailable;

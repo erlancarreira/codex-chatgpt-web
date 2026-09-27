@@ -4,7 +4,6 @@ import {
   prepareNativeRuntime,
   type NativeRuntimeDependencies,
 } from "../src/native-runtime";
-import type { LauncherBrowserConnection } from "../src/launcher-browser-host";
 
 function config(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -19,10 +18,10 @@ function dependencies(
 ): NativeRuntimeDependencies {
   return {
     browserLoginStateExists: () => true,
-    connectLauncherBrowserHost: async () => {
-      throw new Error("unexpected launcher connection");
+    exportLauncherBrowserStorageState: async () => {
+      throw new Error("unexpected launcher storage export");
     },
-    importBrowserLoginStorageState: async migrated => ({
+    adoptTrustedBrowserLoginStorageState: migrated => ({
       storageStatePath: migrated.storageStatePath,
       accountSurfaceUrl: "https://chatgpt.com/",
       solAvailable: true,
@@ -60,27 +59,15 @@ describe("native Codex runtime preparation", () => {
       proAvailable: false,
     });
     const storageState = { cookies: [], origins: [] };
-    let closed = false;
     let importedConfig: AppConfig | undefined;
     let savedConfig: AppConfig | undefined;
 
-    const connection = {
-      context: {
-        storageState: async () => storageState,
-      },
-      browser: {
-        close: async () => {
-          closed = true;
-        },
-      },
-    } as unknown as LauncherBrowserConnection;
-
     const deps = dependencies({
-      connectLauncherBrowserHost: async path => {
+      exportLauncherBrowserStorageState: async path => {
         expect(path).toBe("C:\\runtime\\launcher-browser.json");
-        return connection;
+        return storageState;
       },
-      importBrowserLoginStorageState: async (migrated, imported) => {
+      adoptTrustedBrowserLoginStorageState: (migrated, imported) => {
         importedConfig = structuredClone(migrated);
         expect(imported).toEqual(storageState);
         return {
@@ -98,7 +85,6 @@ describe("native Codex runtime preparation", () => {
 
     const prepared = await prepareNativeRuntime(original, deps);
 
-    expect(closed).toBe(true);
     expect(original.browserHost).toBe("launcher");
     expect(prepared.browserHost).toBe("managed-chrome");
     expect(prepared.browserHostDescriptorPath).toBeUndefined();

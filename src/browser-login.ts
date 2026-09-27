@@ -370,6 +370,30 @@ export async function captureSystemBrowserLoginToFile(
   atomicWriteFile(markerPath, `${JSON.stringify(capture.marker)}\n`);
 }
 
+export function adoptTrustedBrowserLoginStorageState(
+  config: AppConfig,
+  storageState: BrowserLoginStorageState,
+): BrowserLoginResult {
+  mkdirSync(dirname(config.storageStatePath), { recursive: true, mode: 0o700 });
+  const sanitized = sanitizeBrowserLoginStorageState(storageState);
+  if (sanitized.cookies.length === 0) {
+    throw new Error("Launcher browser session contains no ChatGPT/OpenAI cookies.");
+  }
+
+  atomicWriteFile(config.storageStatePath, `${JSON.stringify(sanitized)}\n`);
+  const capabilities = {
+    solAvailable: config.solAvailable === true,
+    extraHighAvailable: config.extraHighAvailable === true,
+    proAvailable: config.proAvailable === true,
+  };
+  writeVerificationMarker(config.storageStatePath, capabilities);
+  return {
+    storageStatePath: config.storageStatePath,
+    accountSurfaceUrl: CHATGPT_TEMPORARY_CHAT_URL,
+    ...capabilities,
+  };
+}
+
 export async function importBrowserLoginStorageState(
   config: AppConfig,
   storageState: BrowserLoginStorageState,

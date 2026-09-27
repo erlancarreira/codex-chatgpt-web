@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  adoptTrustedBrowserLoginStorageState,
   browserLoginStateExists,
   captureSystemBrowserLogin,
   loginToChatGpt,
@@ -142,6 +143,38 @@ test("a storage-state file is not trusted without a verification marker", () => 
       `${JSON.stringify({ version: 1, authenticated: true, verifiedAt: "2026-07-26T00:00:00.000Z" })}\n`,
       { mode: 0o600 },
     );
+    expect(browserLoginStateExists(config)).toBe(true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("trusted launcher storage adoption persists sanitized authenticated state without opening Chrome", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-adopt-login-"));
+  try {
+    const config = defaultConfig("full");
+    config.storageStatePath = join(root, "storage-state.json");
+    config.solAvailable = true;
+    config.extraHighAvailable = false;
+    config.proAvailable = false;
+
+    const result = adoptTrustedBrowserLoginStorageState(config, {
+      cookies: [{
+        name: "session",
+        value: "value",
+        domain: ".chatgpt.com",
+        path: "/",
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      }],
+      origins: [],
+    });
+
+    expect(result.solAvailable).toBe(true);
+    expect(existsSync(config.storageStatePath)).toBe(true);
+    expect(existsSync(loginVerificationMarkerPath(config.storageStatePath))).toBe(true);
     expect(browserLoginStateExists(config)).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });

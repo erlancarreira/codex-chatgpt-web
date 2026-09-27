@@ -2958,6 +2958,38 @@ class BrowserHost {
     }
   }
 
+  async exportSessionStorageState() {
+    requireAutomaticBrowserInspection(this, "ChatGPT session export");
+    await this.ready();
+    const contents = this.view?.webContents;
+    if (!contents || contents.isDestroyed()) throw new Error("Owned ChatGPT browser session is unavailable");
+    const cookies = await contents.session.cookies.get({});
+    const allowed = cookies
+      .filter(cookie => {
+        const domain = String(cookie.domain || "").replace(/^\.+/, "").toLowerCase();
+        const domainAllowed = domain === "chatgpt.com" || domain.endsWith(".chatgpt.com")
+          || domain === "openai.com" || domain.endsWith(".openai.com");
+        return domainAllowed && cookie.partitionKey === undefined;
+      })
+      .map(cookie => ({
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path || "/",
+        expires: Number.isFinite(cookie.expirationDate) ? cookie.expirationDate : -1,
+        httpOnly: cookie.httpOnly === true,
+        secure: cookie.secure === true,
+        sameSite: cookie.sameSite === "strict"
+          ? "Strict"
+          : cookie.sameSite === "no_restriction"
+            ? "None"
+            : "Lax",
+      }));
+    if (cookies.length > 0 && allowed.length === 0) {
+      throw new Error("ChatGPT session export found no transferable ChatGPT/OpenAI cookies");
+    }
+    return { cookies: allowed, origins: [] };
+  }
   async inspectSession(detectCapabilities = false) {
     requireAutomaticBrowserInspection(this, "ChatGPT session and capability inspection");
     if (this.manualOperation === INTERACTION_MODE_CHANGE_OPERATION) {

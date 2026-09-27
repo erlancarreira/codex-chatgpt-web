@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
+import type { BrowserLoginStorageState } from "./browser-login";
 import { expandUserPath } from "./config";
 import { processRunning } from "./process";
 
@@ -348,6 +349,37 @@ export async function inspectLauncherBrowserHost(
       ? `session inspection timed out after ${timeoutMs}ms`
       : error instanceof Error ? error.message : String(error);
     throw new Error(`Launcher ChatGPT session could not be verified: ${detail}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function exportLauncherBrowserStorageState(
+  descriptorPath: string,
+  timeoutMs = LAUNCHER_SESSION_INSPECTION_TIMEOUT_MS,
+): Promise<BrowserLoginStorageState> {
+  const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${descriptor.control.endpoint}/v1/session/export`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${descriptor.control.token}`,
+        "content-type": "application/json",
+      },
+      body: "{}",
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({})) as Partial<BrowserLoginStorageState> & { error?: string };
+    if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+    if (!Array.isArray(body.cookies) || !Array.isArray(body.origins)) {
+      throw new Error("Launcher returned invalid browser storage state");
+    }
+    return { cookies: body.cookies, origins: body.origins };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Launcher ChatGPT session could not be exported: ${detail}`);
   } finally {
     clearTimeout(timer);
   }

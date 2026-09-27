@@ -101,6 +101,7 @@ class BrowserControlServer {
       || request.url === "/v1/turn/end";
     const isTurnRelease = request.url === "/v1/turn/release";
     const isSessionInspect = request.url === "/v1/session/inspect";
+    const isSessionExport = request.url === "/v1/session/export";
     const isProxyResolution = request.url === "/v1/network/resolve-proxy";
     const manualAction = new Map([
       ["/v1/manual/start", "start"],
@@ -110,7 +111,7 @@ class BrowserControlServer {
       ["/v1/manual/end", "end"],
       ["/v1/manual/cancel", "cancel"],
     ]).get(request.url);
-    if (request.method !== "POST" || (!isTurn && !isTurnRelease && !isSessionInspect && !isProxyResolution && !manualAction)) {
+    if (request.method !== "POST" || (!isTurn && !isTurnRelease && !isSessionInspect && !isSessionExport && !isProxyResolution && !manualAction)) {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
@@ -135,6 +136,16 @@ class BrowserControlServer {
       const preferences = this.getPreferences();
       const host = this.getBrowserHost();
       if (!host) throw new Error("browser host is not ready");
+      if (isSessionExport) {
+        if (host.browserInteractionMode() === "manual") {
+          const error = new Error("ChatGPT session export is disabled in Zero Risk mode");
+          error.code = "manual_browser_inspection_disabled";
+          throw error;
+        }
+        const result = await host.exportSessionStorageState();
+        writeJson(response, 200, result);
+        return;
+      }
       if (isSessionInspect) {
         if (host.browserInteractionMode() === "manual") {
           const error = new Error(
