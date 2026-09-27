@@ -102,7 +102,8 @@ export async function assertChatGptModelFamily(
       (element.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean)
         .map(id => element.ownerDocument.getElementById(id)?.textContent ?? "")
     ));
-    if (checked && state && state.value === state.min + effortIndex && chatGptModelFamilyMatches(descriptions, family, effort)) return;
+    if (checked && state && state.value === state.min + effortIndex
+      && (effort !== "max" || chatGptModelFamilyMatches(descriptions, family, effort))) return;
     if (Date.now() >= deadline) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   } while (true);
