@@ -5,8 +5,14 @@ import { timingSafeEqual } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { stdin, stdout } from "node:process";
-import { captureSystemBrowserLoginToFile, checkBrowserEngine, loginToChatGpt } from "./browser-login";
-import { defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
+import {
+  browserLoginStateExists,
+  captureSystemBrowserLoginToFile,
+  checkBrowserEngine,
+  loginToChatGpt,
+  storedBrowserLoginCapabilities,
+} from "./browser-login";
+import { defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup, saveConfig } from "./config";
 import {
   inspectLauncherBrowserHost,
   inspectLauncherBrowserHostLiveness,
@@ -40,6 +46,7 @@ Usage:
   codex-chatgpt-web setup --browser-only [options]
   codex-chatgpt-web setup --full --tunnel-id ID --runtime-key-file PATH [options]
   codex-chatgpt-web login
+  codex-chatgpt-web account <switch|status>
   codex-chatgpt-web doctor [--json]
   codex-chatgpt-web route <status|connect|disconnect>
   codex-chatgpt-web subagents <status|compatibility-v1|native>
@@ -226,6 +233,39 @@ function launcherLoginContinuation(): { promise: Promise<void>; close: () => voi
       cleanup();
     },
   };
+}
+
+async function accountCommand(args: string[]): Promise<void> {
+  const action = args.shift();
+  assertNoArgs(args);
+  const config = loadConfig();
+
+  if (action === "status") {
+    const capabilities = storedBrowserLoginCapabilities(config);
+    stdout.write(JSON.stringify({
+      authenticated: browserLoginStateExists(config),
+      solAvailable: capabilities.solAvailable ?? config.solAvailable,
+      extraHighAvailable: capabilities.extraHighAvailable ?? config.extraHighAvailable,
+      proAvailable: capabilities.proAvailable ?? config.proAvailable,
+    }, null, 2) + "\n");
+    return;
+  }
+
+  if (action !== "switch") {
+    throw new Error("Account command must be: account <switch|status>");
+  }
+  if (config.browserHost === "launcher") {
+    throw new Error("ChatGPT login is owned by the launcher; open Codex Web GPT and use its Sign in step");
+  }
+
+  const result = await loginToChatGpt(config);
+  saveConfig({
+    ...config,
+    solAvailable: result.solAvailable,
+    extraHighAvailable: result.extraHighAvailable,
+    proAvailable: result.proAvailable,
+  });
+  stdout.write(`ChatGPT Web account switched. Login stored at ${result.storageStatePath}\n`);
 }
 
 async function loginCommand(args: string[]): Promise<void> {
@@ -581,6 +621,7 @@ async function main(): Promise<void> {
   if (command === "help") stdout.write(HELP);
   else if (command === "setup") await setupCommand(args);
   else if (command === "login") await loginCommand(args);
+  else if (command === "account") await accountCommand(args);
   else if (command === "doctor" || command === "status") await doctorCommand(args);
   else if (command === "route") await routeCommand(args);
   else if (command === "subagents") await subagentsCommand(args);
