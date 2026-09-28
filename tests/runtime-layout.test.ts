@@ -99,6 +99,7 @@ test("default setup uses the fixed production connector identities", () => {
   expect(defaultConfig("full").manualAppName).toBe(ZERO_RISK_CHATGPT_CONNECTOR_NAME);
   expect(defaultConfig("full").subagentProtocol).toBe("compatibility-v1");
   expect(defaultConfig("full").browserInteractionMode).toBe("automatic");
+  expect(defaultConfig("full").headed).toBe(false);
   expect(defaultConfig("full").zeroRiskProEnabled).toBe(false);
 });
 

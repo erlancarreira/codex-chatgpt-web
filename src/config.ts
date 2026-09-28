@@ -245,7 +245,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     chromeExecutablePath: defaultChromeExecutable(),
     storageStatePath: join(home, "browser", "storage-state.json"),
     brokerSocketPath: defaultBrokerEndpoint(home),
-    headed: true,
+    headed: false,
     solAvailable: true,
     extraHighAvailable: false,
     proAvailable: false,
