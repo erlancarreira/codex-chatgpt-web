@@ -197,3 +197,29 @@ test("ChatGPT-only native catalog rows do not turn model discovery into a 502", 
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/"))
     .every(model => model.supported_in_api === true)).toBe(true);
 });
+
+test("returns a standalone ChatGPT Web catalog when the provider intentionally sends no bearer auth", async () => {
+  const config = defaultConfig("full");
+  config.solAvailable = true;
+  config.extraHighAvailable = false;
+  config.proAvailable = false;
+
+  let upstreamCalled = false;
+  const response = await modelsRequest(
+    new Request("http://127.0.0.1:17841/v1/models"),
+    config,
+    async () => {
+      upstreamCalled = true;
+      throw new Error("upstream must not be used without bearer auth");
+    },
+  );
+
+  expect(response.status).toBe(200);
+  expect(upstreamCalled).toBe(false);
+  const body = await response.json() as { models: Array<{ slug: string; visibility?: string }> };
+  expect(body.models.filter(model => model.visibility === "list").map(model => model.slug)).toEqual([
+    "chatgpt-web/gpt-5.6-sol-instant",
+    "chatgpt-web/gpt-5.6-sol",
+  ]);
+  expect(body.models.every(model => model.slug.startsWith("chatgpt-web/"))).toBe(true);
+});

@@ -23,7 +23,7 @@ import { AsyncEventQueue } from "./event-queue";
 import { readJsonRequestBody } from "./http-body";
 import { httpStatusFromTerminalError } from "./lib/errors";
 import { createHash } from "node:crypto";
-import { augmentNativeModelCatalog } from "./model-catalog";
+import { augmentNativeModelCatalog, buildStandaloneChatGptWebModelCatalog } from "./model-catalog";
 import {
   readCodexModelContextOverride,
   readCodexSubagentProtocol,
@@ -403,6 +403,19 @@ export async function modelsRequest(
   contextOverride?: () => CodexModelContextOverride | undefined,
   onFailure?: (failure: ModelCatalogFailure) => void,
 ): Promise<Response> {
+  if (!req.headers.get("authorization")) {
+    try {
+      return Response.json(buildStandaloneChatGptWebModelCatalog(config));
+    } catch (error) {
+      onFailure?.(modelCatalogFailure("catalog", error));
+      return formatErrorResponse(
+        500,
+        "server_error",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
   let upstream: Response;
   let sent = false;
   try {

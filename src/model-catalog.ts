@@ -161,6 +161,39 @@ export function buildChatGptWebModel(
   return model;
 }
 
+export function buildStandaloneChatGptWebModelCatalog(config: AppConfig): JsonObject {
+  const template: JsonObject = {
+    slug: "gpt-5.6-sol",
+    display_name: "GPT-5.6 Sol",
+    description: "Local template for ChatGPT Web model discovery.",
+    priority: 1,
+    shell_type: "shell_command",
+    visibility: "list",
+    supported_in_api: true,
+    multi_agent_version: "v2",
+    base_instructions: "",
+    supported_reasoning_levels: [
+      { effort: "low", description: "Low" },
+      { effort: "medium", description: "Medium" },
+      { effort: "high", description: "High" },
+      { effort: "xhigh", description: "Extra High" },
+      { effort: "max", description: "Max" },
+    ],
+    tool_mode: "code_mode_only",
+    context_window: 300_000,
+    max_context_window: 320_000,
+    auto_compact_token_limit: 270_000,
+    additional_speed_tiers: [],
+    service_tiers: [],
+    default_service_tier: null,
+  };
+
+  return {
+    models: availableChatGptWebModelRoutes(config, true)
+      .map(route => buildChatGptWebModel(template, route, config)),
+  };
+}
+
 export function augmentNativeModelCatalog(
   value: unknown,
   config: AppConfig,
