@@ -1090,6 +1090,36 @@ test("lifecycle drain and cancellation include browser turns owned by the extern
   }
 });
 
+test("account logout admin endpoint is authenticated and delegates Web-session cleanup", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const clearedPaths: string[] = [];
+  const server = startServer(config, {
+    clearLoginState: input => {
+      clearedPaths.push(input.storageStatePath);
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    const unauthorized = await fetch(`${endpoint}/admin/account/logout`, { method: "POST" });
+    expect(unauthorized.status).toBe(401);
+    expect(clearedPaths).toEqual([]);
+
+    const authorized = await fetch(`${endpoint}/admin/account/logout`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.controlToken}` },
+    });
+    expect(authorized.status).toBe(200);
+    expect(await authorized.json()).toMatchObject({
+      status: "ok",
+      cancelled_http_turns: 0,
+      cancelled_browser_turns: 0,
+    });
+    expect(clearedPaths).toEqual([config.storageStatePath]);
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("a drained runtime rejects new model-catalog work before shutdown", async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   const server = startServer(config);
@@ -1311,7 +1341,7 @@ test("authenticated shutdown requires a verified idle drain", async () => {
   }
 });
 
-test("model catalog health distinguishes no request, transport failure, upstream denial, and recovery without secrets", async () => {
+test("model catalog health distinguishes standalone catalog, transport failure, upstream denial, and recovery without secrets", async () => {
   let outcome: "transport" | "denied" | "invalid" | "ready" = "transport";
   const server = startServer({ ...defaultConfig("browser-only"), port: 0 }, {
     fetchUpstream: async () => {
@@ -1326,9 +1356,9 @@ test("model catalog health distinguishes no request, transport failure, upstream
   try {
     expect(await health()).toMatchObject({ model_catalog_requests: 0, last_model_catalog_result: null });
     const unauthenticated = await fetch(`${base}/v1/models`);
-    expect(unauthenticated.status).toBe(502);
+    expect(unauthenticated.status).toBe(200);
     await unauthenticated.text();
-    expect((await health()).last_model_catalog_result.failure.stage).toBe("request");
+    expect((await health()).last_model_catalog_result).toMatchObject({ status: 200 });
     for (const [next, status, stage] of [
       ["transport", 502, "transport"], ["denied", 403, "upstream"], ["invalid", 502, "catalog"], ["ready", 200, undefined],
     ] as const) {
@@ -1341,7 +1371,7 @@ test("model catalog health distinguishes no request, transport failure, upstream
       expect(snapshot.last_model_catalog_result.failure?.stage).toBe(stage);
       if (next === "transport") expect(snapshot.last_model_catalog_result.failure.code).toBe("UnsupportedProxyProtocol");
       expect(JSON.stringify(snapshot)).not.toContain("private");
-      expect(snapshot.successful_model_catalog_requests).toBe(next === "ready" ? 1 : 0);
+      expect(snapshot.successful_model_catalog_requests).toBe(next === "ready" ? 2 : 1);
     }
     expect((await health()).model_catalog_requests).toBe(5);
   } finally {

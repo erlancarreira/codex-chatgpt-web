@@ -140,6 +140,15 @@ export function loginVerificationMarkerPath(storageStatePath: string): string {
   return `${storageStatePath}.verified.json`;
 }
 
+export function clearBrowserLoginStorageState(
+  config: Pick<AppConfig, "storageStatePath">,
+): void {
+  const storageRoot = dirname(config.storageStatePath);
+  rmSync(config.storageStatePath, { force: true });
+  rmSync(loginVerificationMarkerPath(config.storageStatePath), { force: true });
+  rmSync(join(storageRoot, "login-profile"), { recursive: true, force: true });
+}
+
 function writeVerificationMarker(
   storageStatePath: string,
   capabilities: ChatGptWebAccountCapabilities,

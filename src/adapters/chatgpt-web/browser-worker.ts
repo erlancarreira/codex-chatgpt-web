@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { skillFileTokens, validateSkillFiles } from "./skill-attachments";
-import { detectChatGptLimitsPlan, readChatGptUsageAccount, readChatGptUsageModel, supportsChatGptUsageTracking, type ChatGptUsageModel } from "./limits";
+import { detectChatGptLimitsPlan, readChatGptSessionIdentity, readChatGptUsageAccount, readChatGptUsageModel, supportsChatGptUsageTracking, type ChatGptSessionIdentity, type ChatGptUsageModel } from "./limits";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page, type Request, type Response } from "playwright-core";
 import {
   atomicWriteFile,
@@ -875,6 +875,15 @@ type SelectedChatGptWebModelMode = ChatGptWebModelMode & {
 };
 
 export async function throwIfChatGptTerminalErrorAlert(scope: ChatGptTextScope): Promise<void> {
+  const capacity = scope
+    .getByText(/Selected model is at capacity\. Please try a different model\./i)
+    .last();
+  if (await capacity.isVisible().catch(() => false)) {
+    throw new ChatGptWebAdapterError(
+      "Selected model is at capacity. Please try a different model.",
+      { status: 503, errorType: "server_error", code: "server_is_overloaded", retryable: true },
+    );
+  }
   if (await scope.getByTestId("regenerate-thread-error-button").last().isVisible().catch(() => false)) {
     throw new ChatGptWebAdapterError(
       "ChatGPT displayed an error for this response. Check the ChatGPT tab for the exact error, then retry the turn.",
@@ -1933,6 +1942,8 @@ class ChatGptBrowserDiagnostics {
               .__CODEX_WEB_GPT_SURFACE_ID__ === "string",
             // textContent avoids the synchronous layout forced by innerText on huge prompts.
             bodyTextChars: document.body?.textContent?.length ?? 0,
+            bodyPreview: (document.body?.innerText ?? document.body?.textContent ?? "")
+              .replace(/\s+/g, " ").trim().slice(0, 1200),
             composer: {
               visibleCount: composers.length,
               textChars: composers.map(element => (
@@ -2317,6 +2328,16 @@ export class ChatGptBrowserWorker {
     return this.enqueueMaintenance("smoke test", () => this.smokeTestExclusive(abortSignal));
   }
 
+  inspectAccountIdentity(): Promise<ChatGptSessionIdentity> {
+    return this.enqueueMaintenance("account identity inspection", async () => {
+      const page = await this.ensurePage();
+      if (new URL(page.url()).origin !== "https://chatgpt.com") {
+        await page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 10_000 });
+      }
+      return readChatGptSessionIdentity(page);
+    });
+  }
+
   inspectLimitsPlan() {
     return this.enqueueMaintenance("Limits setup", async () => {
       const page = await this.ensurePage();
@@ -2427,7 +2448,10 @@ export class ChatGptBrowserWorker {
     }
     this.browser = await chromium.launch({
       executablePath: this.config.chromeExecutablePath,
-      headless: !this.config.headed,
+      headless: false,
+      args: this.config.headed
+        ? []
+        : ["--window-position=-32000,-32000", "--window-size=1280,720", "--start-minimized"],
     });
     this.context = await this.browser.newContext({ storageState: this.config.storageStatePath });
     this.page = await this.context.newPage();
@@ -2445,7 +2469,10 @@ export class ChatGptBrowserWorker {
       }
       const browser = await chromium.launch({
         executablePath: this.config.chromeExecutablePath,
-        headless: !this.config.headed,
+        headless: false,
+        args: this.config.headed
+          ? []
+          : ["--window-position=-32000,-32000", "--window-size=1280,720", "--start-minimized"],
       });
       const context = await browser.newContext({ storageState: this.config.storageStatePath });
       this.browser = browser;

@@ -10,14 +10,18 @@ export function supportsChatGptUsageTracking(account: { personal: boolean; planT
 }
 
 /** Only stable account identity leaves the page; never export session credentials. */
-export async function readChatGptUsageAccount(page: Page): Promise<{
-  accountKey: string;
+export interface ChatGptSessionIdentity {
+  userId: string;
+  accountId: string;
+  email: string | null;
   planType: string;
-  personal: boolean;
+  structure: string;
   needsAttention: boolean;
-}> {
+}
+
+export async function readChatGptSessionIdentity(page: Page): Promise<ChatGptSessionIdentity> {
   if (new URL(page.url()).origin !== "https://chatgpt.com") {
-    throw new Error("Open ChatGPT and sign in before setting up Limits.");
+    throw new Error("Open ChatGPT and sign in before reading account identity.");
   }
   const identity = await page.evaluate(async () => {
     const response = await fetch("/api/auth/session", {
@@ -25,13 +29,13 @@ export async function readChatGptUsageAccount(page: Page): Promise<{
     });
     const url = new URL(response.url);
     if (!response.ok || url.origin !== "https://chatgpt.com" || url.pathname !== "/api/auth/session") {
-      throw new Error("Limits could not verify the current ChatGPT account.");
+      throw new Error(`Could not verify the current ChatGPT account (status=${response.status}, url=${url.origin}${url.pathname}).`);
     }
     const session = await response.json();
-    // Deliberately copy only these fields from the session response.
     return {
       userId: session?.user?.id,
       accountId: session?.account?.id,
+      email: session?.user?.email ?? null,
       planType: session?.account?.planType,
       structure: session?.account?.structure,
       needsAttention: session?.account?.isDelinquent === true,
@@ -39,8 +43,21 @@ export async function readChatGptUsageAccount(page: Page): Promise<{
   });
   if ([identity.userId, identity.accountId, identity.planType, identity.structure]
     .some(value => typeof value !== "string" || !value || value.length > 256)) {
-    throw new Error("Limits could not identify the current ChatGPT account. Sign in and retry.");
+    throw new Error("Could not identify the current ChatGPT account. Sign in and retry.");
   }
+  if (identity.email !== null && (typeof identity.email !== "string" || identity.email.length > 320)) {
+    throw new Error("ChatGPT returned an invalid account email.");
+  }
+  return identity as ChatGptSessionIdentity;
+}
+
+export async function readChatGptUsageAccount(page: Page): Promise<{
+  accountKey: string;
+  planType: string;
+  personal: boolean;
+  needsAttention: boolean;
+}> {
+  const identity = await readChatGptSessionIdentity(page);
   return {
     accountKey: createHash("sha256").update(`${identity.userId}\0${identity.accountId}`).digest("hex"),
     planType: identity.planType,

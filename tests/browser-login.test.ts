@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   adoptTrustedBrowserLoginStorageState,
   browserLoginStateExists,
+  clearBrowserLoginStorageState,
   captureSystemBrowserLogin,
   loginToChatGpt,
   loginVerificationMarkerPath,
@@ -128,6 +129,35 @@ test("passkey storage capture excludes identity-provider and partitioned state",
   expect(state.origins).toEqual([
     { origin: "https://chatgpt.com", localStorage: [{ name: "chat", value: "kept" }] },
   ]);
+});
+
+test("clearing browser login state removes only persisted Web credentials", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-clear-login-"));
+  try {
+    const config = defaultConfig("full");
+    config.storageStatePath = join(root, "browser", "storage-state.json");
+    const profileDir = join(root, "browser", "login-profile");
+    mkdirSync(join(root, "browser"), { recursive: true });
+    writeFileSync(config.storageStatePath, "{}\n", { mode: 0o600 });
+    writeFileSync(
+      loginVerificationMarkerPath(config.storageStatePath),
+      "{}\n",
+      { mode: 0o600 },
+    );
+    mkdirSync(profileDir, { recursive: true });
+    writeFileSync(join(profileDir, "sentinel"), "session\n");
+    const unrelated = join(root, "unrelated.txt");
+    writeFileSync(unrelated, "keep\n");
+
+    clearBrowserLoginStorageState(config);
+
+    expect(existsSync(config.storageStatePath)).toBe(false);
+    expect(existsSync(loginVerificationMarkerPath(config.storageStatePath))).toBe(false);
+    expect(existsSync(profileDir)).toBe(false);
+    expect(readFileSync(unrelated, "utf8")).toBe("keep\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("a storage-state file is not trusted without a verification marker", () => {

@@ -2788,6 +2788,20 @@ test("the known terminal ChatGPT error alert returns a structured retryable fail
   expect(fixture.pressed).toEqual([]);
 });
 
+test("capacity errors are classified as retryable overloads before generic terminal errors", async () => {
+  const fixture = dialogPage("Selected model is at capacity. Please try a different model.");
+
+  await expect(throwIfChatGptTerminalErrorAlert(fixture.page)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 503,
+    errorType: "server_error",
+    code: "server_is_overloaded",
+    retryable: true,
+    message: "Selected model is at capacity. Please try a different model.",
+  });
+  expect(fixture.pressed).toEqual([]);
+});
+
 test("only a size rejection of the current owned browser submission is non-retryable", async () => {
   const frame = {};
   const page = Object.assign(new EventEmitter(), { mainFrame: () => frame });

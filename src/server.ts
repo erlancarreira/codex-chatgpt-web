@@ -1,5 +1,5 @@
 import { chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-web";
-import { closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
+import { ChatGptBrowserWorker, closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
 import { closeTurnBrokers, TurnBroker } from "./adapters/chatgpt-web/turn-broker";
 import { timingSafeEqual } from "node:crypto";
 import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
@@ -17,6 +17,7 @@ import {
 } from "./adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
+import { clearBrowserLoginStorageState } from "./browser-login";
 import type { AppConfig } from "./config";
 import { providerConfig } from "./config";
 import { AsyncEventQueue } from "./event-queue";
@@ -823,7 +824,11 @@ export async function compactRequest(
 
 export function startServer(
   config: AppConfig,
-  dependencies: { fetchUpstream?: NativeFetch; adapterFactory?: ChatGptWebAdapterFactory } = {},
+  dependencies: {
+    fetchUpstream?: NativeFetch;
+    adapterFactory?: ChatGptWebAdapterFactory;
+    clearLoginState?: (config: Pick<AppConfig, "storageStatePath">) => void;
+  } = {},
 ): ReturnType<typeof Bun.serve> {
   if (config.purpose === "dev-harness") {
     throw new Error("DEV harness configuration cannot start a Responses listener");
@@ -877,6 +882,32 @@ export function startServer(
           model_catalog_requests: modelCatalogRequests,
           last_model_catalog_result: lastModelCatalogResult,
           ...activity(),
+        });
+      }
+      if (req.method === "GET" && url.pathname === "/admin/account/identity") {
+        if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
+        try {
+          const identity = await ChatGptBrowserWorker.forProvider(providerConfig(config)).inspectAccountIdentity();
+          return Response.json({ status: "ok", identity });
+        } catch (error) {
+          return Response.json(
+            { status: "error", error: error instanceof Error ? error.message : String(error) },
+            { status: 503 },
+          );
+        }
+      }
+      if (req.method === "POST" && url.pathname === "/admin/account/logout") {
+        if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
+        const reason = new Error("ChatGPT Web account signed out");
+        const cancelledBrowserTurns = chatGptTurnSessions.clear();
+        const cancelledBrokerTurns = turnBroker?.revokeExternalOwners() ?? 0;
+        const cancelledHttpTurns = await httpTurns.cancelAll(reason);
+        await closeChatGptBrowserWorkers();
+        (dependencies.clearLoginState ?? clearBrowserLoginStorageState)(config);
+        return Response.json({
+          status: "ok",
+          cancelled_http_turns: cancelledHttpTurns,
+          cancelled_browser_turns: cancelledBrowserTurns + cancelledBrokerTurns,
         });
       }
       if (req.method === "POST" && (url.pathname === "/admin/drain" || url.pathname === "/admin/resume")) {

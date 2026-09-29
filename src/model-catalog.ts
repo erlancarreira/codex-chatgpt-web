@@ -170,6 +170,12 @@ export function buildStandaloneChatGptWebModelCatalog(config: AppConfig): JsonOb
     shell_type: "shell_command",
     visibility: "list",
     supported_in_api: true,
+    support_verbosity: false,
+    default_verbosity: null,
+    apply_patch_tool_type: null,
+    web_search_tool_type: "text",
+    truncation_policy: { mode: "tokens", limit: 10_000 },
+    experimental_supported_tools: [],
     multi_agent_version: "v2",
     base_instructions: "",
     supported_reasoning_levels: [
