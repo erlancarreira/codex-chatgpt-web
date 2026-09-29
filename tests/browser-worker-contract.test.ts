@@ -11,7 +11,7 @@ import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
-import { CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { CHATGPT_COMPOSER_SELECTOR, CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
@@ -681,8 +681,18 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     isEnabled: async () => true,
     press: async () => { sendPresses += 1; },
   };
+  const sendButtons = {
+    filter() { return this; },
+    count: async () => 1,
+    first: () => sendButton,
+  };
   const composer = {
-    locator: () => ({ locator: (selector: string) => { expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR); return sendButton; } }),
+    locator: () => ({
+      locator: (selector: string) => {
+        expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
+        return sendButtons;
+      },
+    }),
   };
   worker.activeComposer = async () => composer;
 
@@ -803,8 +813,18 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
       if (options?.timeout !== 0) throw new Error("nested locator timeout replaced the outer stage budget");
     },
   };
+  const sendButtons = {
+    filter() { return this; },
+    count: async () => 1,
+    first: () => sendButton,
+  };
   worker.activeComposer = async () => ({
-    locator: () => ({ locator: (selector: string) => { expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR); return sendButton; } }),
+    locator: () => ({
+      locator: (selector: string) => {
+        expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
+        return sendButtons;
+      },
+    }),
   });
   worker.waitForSubmissionAcceptedWithRecovery = async () => "user_turn";
 
@@ -1150,25 +1170,53 @@ test("closing the launcher page is an immediate terminal turn error", async () =
 });
 
 test("active composer resolution waits for exactly one visible editor", async () => {
-  const composer = { id: "active" };
+  const composer = { id: "active", isVisible: async () => true };
   const counts = [2, 1];
-  const visibleComposers = {
+  const knownComposers = {
     count: async () => counts.shift() ?? 1,
-    first: () => composer,
+    nth: () => composer,
+  };
+  const absentFallback = {
+    count: async () => 0,
+    nth: () => ({ isVisible: async () => false }),
   };
   const page = {
-    locator: () => ({
-      filter: (options: { visible: boolean }) => {
-        expect(options).toEqual({ visible: true });
-        return visibleComposers;
-      },
-    }),
+    locator: (selector: string) => selector === CHATGPT_COMPOSER_SELECTOR
+      ? knownComposers
+      : absentFallback,
   };
   const activeComposer = (ChatGptBrowserWorker.prototype as unknown as {
     activeComposer(page: unknown, timeoutMs?: number): Promise<unknown>;
   }).activeComposer;
 
   expect(await activeComposer.call({}, page, 500)).toBe(composer);
+});
+
+test("active composer falls back only to the focused structural textarea when known selectors are absent", async () => {
+  const fallbackComposer = { id: "focused-textarea", isVisible: async () => true };
+  const strictComposers = {
+    count: async () => 0,
+    nth: () => ({ isVisible: async () => false }),
+  };
+  const fallbackComposers = {
+    count: async () => 1,
+    nth: (index: number) => {
+      expect(index).toBe(0);
+      return fallbackComposer;
+    },
+  };
+  const page = {
+    locator: (selector: string) => {
+      if (selector === CHATGPT_COMPOSER_SELECTOR) return strictComposers;
+      expect(selector).toBe('form:not([role="search"]) textarea:focus:not([disabled]):not([readonly])');
+      return fallbackComposers;
+    },
+  };
+  const activeComposer = (ChatGptBrowserWorker.prototype as unknown as {
+    activeComposer(page: unknown, timeoutMs?: number): Promise<unknown>;
+  }).activeComposer;
+
+  expect(await activeComposer.call({}, page, 500)).toBe(fallbackComposer);
 });
 
 test("prompt verification accepts Lexical NBSP preservation without weakening other mismatches", async () => {
@@ -4214,6 +4262,46 @@ test("embedded chart hydration cannot replace Markdown answer content with rende
   expect(textFor(projectedFiles)).toBe("Report: report.pdf report.pdf");
   expect(projectedFiles.querySelectorAll("button, a, svg").length).toBe(0);
   expect(files.innerHTML).toBe(originalFiles);
+});
+
+test("compaction can complete from stable final text when ChatGPT omits completion actions", () => {
+  const tracker = new ChatGptCompletionTracker(500, 1_000, true);
+  const state = {
+    responsePresent: true,
+    running: false,
+    currentText: "Compact checkpoint summary",
+    currentHtml: "<p>Compact checkpoint summary</p>",
+    completionActionVisible: false,
+  };
+  expect(tracker.update(state, 1_000)).toBeFalse();
+  expect(tracker.update(state, 1_499)).toBeFalse();
+  expect(tracker.update(state, 1_500)).toBeTrue();
+});
+
+test("compaction stable-text completion ignores irrelevant HTML churn", () => {
+  const tracker = new ChatGptCompletionTracker(500, 1_000, true);
+  const base = {
+    responsePresent: true,
+    running: false,
+    currentText: "Stable compact summary",
+    completionActionVisible: false,
+  };
+  expect(tracker.update({ ...base, currentHtml: "<p data-r=\"1\">Stable compact summary</p>" }, 1_000)).toBeFalse();
+  expect(tracker.update({ ...base, currentHtml: "<p data-r=\"2\">Stable compact summary</p>" }, 1_499)).toBeFalse();
+  expect(tracker.update({ ...base, currentHtml: "<p data-r=\"3\">Stable compact summary</p>" }, 1_500)).toBeTrue();
+});
+
+test("normal turns still require explicit completion evidence when actions are absent", () => {
+  const tracker = new ChatGptCompletionTracker(500, 1_000, false);
+  const state = {
+    responsePresent: true,
+    running: false,
+    currentText: "Looks final but has no completion action",
+    currentHtml: "<p>Looks final but has no completion action</p>",
+    completionActionVisible: false,
+  };
+  expect(tracker.update(state, 1_000)).toBeFalse();
+  expect(tracker.update(state, 2_000)).toBeFalse();
 });
 
 test("proven MCP progress vetoes completion, not only the health verdicts", () => {

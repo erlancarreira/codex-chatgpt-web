@@ -55,6 +55,7 @@ import {
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
+  resolveChatGptComposer,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
@@ -1417,7 +1418,10 @@ export async function setChatGptThinkMode(
   }
   const target = enabled ? "true" : "false";
   if (pressed !== target) {
-    const composer = composerForm.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first();
+    const composer = composerForm
+      .locator(`${CHATGPT_COMPOSER_SELECTOR}, textarea:not([disabled]):not([readonly])`)
+      .filter({ visible: true })
+      .first();
     const composerState = () => composer.evaluate(element => {
       const copy = element.cloneNode(true) as HTMLElement;
       const pills = [...copy.querySelectorAll('[data-id^="plugin:"][data-keyword]')];
@@ -1503,6 +1507,7 @@ export class ChatGptCompletionTracker {
   constructor(
     private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS,
     private readonly missingPostToolAnswerMs = CHATGPT_COMPLETION_ACTION_GRACE_MS,
+    private readonly allowStableTextCompletion = false,
   ) {}
 
   needsToolBatchObservation(revision: number): boolean {
@@ -1529,7 +1534,9 @@ export class ChatGptCompletionTracker {
     },
     now = Date.now(),
   ): boolean {
-    const signature = `${state.currentText}\0${state.currentHtml ?? state.currentText}`;
+    const signature = this.allowStableTextCompletion
+      ? state.currentText
+      : `${state.currentText}\0${state.currentHtml ?? state.currentText}`;
     // An outstanding tool call proves the model has more to say, whatever the rendered message
     // currently looks like. Completing here would return a truncated answer and retire the turn
     // while its own tool calls were still in flight.
@@ -1538,9 +1545,14 @@ export class ChatGptCompletionTracker {
       this.missingPostToolAnswerSince = undefined;
       return false;
     }
+    const completionSignal = chatGptTurnIsComplete(state)
+      || (this.allowStableTextCompletion
+        && state.responsePresent
+        && !state.running
+        && state.currentText.length > 0);
     if (this.postToolAnswerBaselineText === state.currentText) {
       this.candidate = undefined;
-      if (!chatGptTurnIsComplete(state)) {
+      if (!completionSignal) {
         this.missingPostToolAnswerSince = undefined;
         return false;
       }
@@ -1551,7 +1563,7 @@ export class ChatGptCompletionTracker {
       return false;
     }
     this.missingPostToolAnswerSince = undefined;
-    if (!chatGptTurnIsComplete(state)) {
+    if (!completionSignal) {
       this.candidate = undefined;
       return false;
     }
@@ -1966,6 +1978,10 @@ class ChatGptBrowserDiagnostics {
                       "id", "data-testid", "data-lexical-editor", "data-composer-markdown",
                       "contenteditable", "placeholder", "autofocus", "disabled", "readonly",
                     ].map(name => [name, element.hasAttribute(name)])),
+                    id: element.getAttribute("id"),
+                    placeholderChars: element.getAttribute("placeholder")?.length ?? 0,
+                    formButtonCount: element.closest("form")?.querySelectorAll("button").length ?? 0,
+                    formSubmitButtonCount: element.closest("form")?.querySelectorAll('button[type="submit"]').length ?? 0,
                     inForm: Boolean(element.closest("form")),
                     inComposerForm: Boolean(element.closest("form[data-chatgpt-composer]")),
                     focused: element === document.activeElement,
@@ -2194,6 +2210,15 @@ export function chatGptPromptFilePayloads(
 export function insertPlainTextIntoComposer(element: HTMLElement, value: string): boolean {
   if (document.activeElement !== element) element.focus();
   if (document.activeElement !== element) return false;
+  const tagName = element.tagName?.toUpperCase();
+  if (tagName === "TEXTAREA" || tagName === "INPUT") {
+    const control = element as HTMLTextAreaElement | HTMLInputElement;
+    const start = control.selectionStart ?? control.value.length;
+    const end = control.selectionEnd ?? start;
+    control.setRangeText(value, start, end, "end");
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
   const selection = window.getSelection();
   if (!selection) return false;
   const alreadyPlaced = selection.isCollapsed
@@ -2707,19 +2732,17 @@ export class ChatGptBrowserWorker {
     timeoutMs = 30_000,
     abortSignal?: AbortSignal,
   ): Promise<Locator> {
-    const composers = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true });
     const deadline = Date.now() + timeoutMs;
-    let count = 0;
     while (Date.now() < deadline) {
       throwIfPromptAttachmentAborted(abortSignal);
-      count = await withBrowserTurnAbort(
+      const composer = await withBrowserTurnAbort(
         withChatGptBrowserObservationTimeout(
-          composers.count(),
+          resolveChatGptComposer(page),
           Math.max(1, Math.min(CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, deadline - Date.now())),
         ),
         abortSignal,
       );
-      if (count === 1) return composers.first();
+      if (composer) return composer;
       await withBrowserTurnAbort(
         new Promise(resolveSleep => setTimeout(resolveSleep, 50)),
         abortSignal,
@@ -2727,7 +2750,7 @@ export class ChatGptBrowserWorker {
     }
     throw new Error(
       "ChatGPT composer is unavailable. Reload ChatGPT and retry the task.",
-      { cause: new Error(`Visible ChatGPT composer count was ${count}`) },
+      { cause: new Error("No unique known or focused textarea composer was available") },
     );
   }
 
@@ -3226,6 +3249,9 @@ export class ChatGptBrowserWorker {
   private async attachedPromptText(page: Page, abortSignal?: AbortSignal): Promise<string> {
     const composer = await this.activeComposer(page, 30_000, abortSignal);
     return composer.evaluate(element => {
+      if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+        return element.value.trimStart();
+      }
       const clone = element.cloneNode(true) as HTMLElement;
       clone.querySelectorAll(
         '[data-id^="plugin:"][data-keyword], [data-inline-selection-pill-cursor-target], [app-mention-path^="app://"][app-mention-display-name][contenteditable="false"]',
@@ -3271,14 +3297,43 @@ export class ChatGptBrowserWorker {
       .filter({ visible: true });
   }
 
+  private selectedConnectorFormControl(composer: Locator): Locator {
+    return composer
+      .locator("xpath=ancestor::form[1]")
+      .locator([
+        `[data-id^="plugin:"][data-keyword=${JSON.stringify(this.config.appName)}]`,
+        `[app-mention-path^="app://"][app-mention-display-name=${JSON.stringify(this.config.appName)}][contenteditable="false"]`,
+      ].join(", "))
+      .filter({ visible: true });
+  }
+
   private async connectorIsSelected(composer: Locator, abortSignal?: AbortSignal): Promise<boolean> {
-    const selected = this.selectedConnectorControl(composer);
-    const keywords = await withBrowserTurnAbort(
+    let selected = this.selectedConnectorControl(composer);
+    let keywords = await withBrowserTurnAbort(
       withChatGptBrowserObservationTimeout(selected.evaluateAll(elements => (
         elements.map(element => element.getAttribute("data-keyword") ?? element.getAttribute("app-mention-display-name"))
       ))),
       abortSignal,
     );
+    if (keywords.length === 0) {
+      const tagName = await withBrowserTurnAbort(
+        withChatGptBrowserObservationTimeout(
+          typeof (composer as unknown as { evaluate?: unknown }).evaluate === "function"
+            ? composer.evaluate(element => element.tagName)
+            : Promise.resolve(""),
+        ),
+        abortSignal,
+      ).catch(() => "");
+      if (tagName === "TEXTAREA" || tagName === "INPUT") {
+        selected = this.selectedConnectorFormControl(composer);
+        keywords = await withBrowserTurnAbort(
+          withChatGptBrowserObservationTimeout(selected.evaluateAll(elements => (
+            elements.map(element => element.getAttribute("data-keyword") ?? element.getAttribute("app-mention-display-name"))
+          ))),
+          abortSignal,
+        );
+      }
+    }
     const exactMatches = keywords.filter(keyword => keyword === this.config.appName).length;
     if (exactMatches > 1) {
       throw new Error(`ChatGPT composer exposed duplicate ${JSON.stringify(this.config.appName)} connector selections`);
@@ -3349,7 +3404,10 @@ export class ChatGptBrowserWorker {
       const settledComposer = await this.activeComposer(page, Math.max(1, deadline - Date.now()), signal);
       const remainingMs = Math.max(1, deadline - Date.now());
       const remainingText = await settledComposer.evaluate(
-        element => element.textContent?.trim() ?? "",
+        element => (
+          element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
+            ? element.value : element.textContent ?? ""
+        ).trim(),
         undefined,
         { timeout: remainingMs, signal },
       );
@@ -3700,28 +3758,36 @@ export class ChatGptBrowserWorker {
     recoverObservation?: ChatGptObservationRecovery,
   ): Promise<ChatGptSubmissionEvidence> {
     const composer = await this.activeComposer(page);
-    const sendButton = composer
-      .locator("xpath=ancestor::form[1]")
-      .locator(CHATGPT_SEND_BUTTON_SELECTOR);
-    await sendButton.waitFor({ state: "visible", timeout: browserStageTimeouts.send });
-    await settleChatGptUi();
-    const sendEnableDeadline = Date.now() + CHATGPT_SEND_ENABLE_GRACE_MS;
-    for (;;) {
-      if (abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-      if (page.isClosed()) throw chatGptBrowserTabClosedError();
-      await throwIfChatGptSessionFailureAlert(page);
-      await throwIfChatGptRateLimitDialog(page);
-      if (await sendButton.isEnabled()) break;
-      if (Date.now() >= sendEnableDeadline) {
-        await captureDiagnostic?.("send-disabled");
-        throw new Error("ChatGPT send button remained disabled after the complete prompt was attached");
-      }
-      await settleChatGptUi();
+    const composerForm = composer.locator("xpath=ancestor::form[1]");
+    const sendButtons = composerForm.locator(CHATGPT_SEND_BUTTON_SELECTOR).filter({ visible: true });
+    const sendButtonCount = await sendButtons.count().catch(() => 0);
+    if (sendButtonCount > 1) {
+      throw new Error(`ChatGPT composer exposed ${sendButtonCount} visible send controls; refusing an ambiguous submission`);
     }
-    await captureDiagnostic?.("send-ready");
+    const sendButton = sendButtonCount === 1 ? sendButtons.first() : undefined;
+    await settleChatGptUi();
+    if (sendButton) {
+      const sendEnableDeadline = Date.now() + CHATGPT_SEND_ENABLE_GRACE_MS;
+      for (;;) {
+        if (abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+        if (page.isClosed()) throw chatGptBrowserTabClosedError();
+        await throwIfChatGptSessionFailureAlert(page);
+        await throwIfChatGptRateLimitDialog(page);
+        if (await sendButton.isEnabled()) break;
+        if (Date.now() >= sendEnableDeadline) {
+          await captureDiagnostic?.("send-disabled");
+          throw new Error("ChatGPT send button remained disabled after the complete prompt was attached");
+        }
+        await settleChatGptUi();
+      }
+    } else if (!await composer.isEditable()) {
+      throw new Error("ChatGPT composer is not editable and no send control is available");
+    }
+    await captureDiagnostic?.(sendButton ? "send-ready" : "send-ready-keyboard-fallback");
     const initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0;
     await submissionLifecycle?.onSendActivated?.();
-    await sendButton.press("Enter", {
+    const submitTarget = sendButton ?? composer;
+    await submitTarget.press("Enter", {
       noWaitAfter: true,
       signal: abortSignal,
       // runStage owns the operation budget. A second Locator timeout would silently collapse the
@@ -5255,7 +5321,11 @@ export class ChatGptBrowserWorker {
         this.attachFiles(page, prepared)
       ));
       await diagnostics.capture(page, "file-attachment-complete");
-      const completionTracker = new ChatGptCompletionTracker();
+      const completionTracker = new ChatGptCompletionTracker(
+        CHATGPT_COMPLETION_SETTLE_MS,
+        CHATGPT_COMPLETION_ACTION_GRACE_MS,
+        turn.compaction === true,
+      );
       const recordFinalUsage = await usageSubmission();
       const finalSubmissionEvidence = await this.runStage(
         turn.traceId,

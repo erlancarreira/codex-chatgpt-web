@@ -12,6 +12,8 @@ export const CHATGPT_COMPOSER_SELECTOR = [
   "#prompt-textarea",
   '[contenteditable="true"][data-lexical-editor="true"]',
   'form[data-chatgpt-composer] [data-composer-markdown][contenteditable="true"][role="textbox"]',
+  'form:has([data-testid="send-button"]) textarea:not([disabled]):not([readonly])',
+  'form:has(button[type="submit"]) textarea:not([disabled]):not([readonly])',
 ].join(", ");
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[aria-haspopup="menu"][data-tone="neutral"]',
@@ -216,11 +218,40 @@ async function anyVisible(locator: Locator): Promise<boolean> {
   return false;
 }
 
-export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> {
-  const composer = page.locator(
-    CHATGPT_COMPOSER_SELECTOR,
+export async function resolveChatGptComposer(page: Page): Promise<Locator | undefined> {
+  const uniqueVisible = async (locator: Locator): Promise<Locator | undefined> => {
+    const locatorLike = locator as Locator & {
+      count?: () => Promise<number>;
+      nth?: (index: number) => Locator;
+      isVisible?: () => Promise<boolean>;
+    };
+    if (typeof locatorLike.count !== "function") return undefined;
+    const count = await locatorLike.count().catch(() => 0);
+    if (count === 1 && typeof locatorLike.nth !== "function") {
+      if (typeof locatorLike.isVisible !== "function") return locator;
+      return await locatorLike.isVisible().catch(() => false) ? locator : undefined;
+    }
+    if (typeof locatorLike.nth !== "function") return undefined;
+    let visible: Locator | undefined;
+    for (let index = 0; index < count; index += 1) {
+      const candidate = locatorLike.nth(index);
+      if (!await candidate.isVisible().catch(() => false)) continue;
+      if (visible) return undefined;
+      visible = candidate;
+    }
+    return visible;
+  };
+
+  const known = await uniqueVisible(page.locator(CHATGPT_COMPOSER_SELECTOR));
+  if (known) return known;
+
+  return uniqueVisible(
+    page.locator('form:not([role="search"]) textarea:focus:not([disabled]):not([readonly])'),
   );
-  if (!await anyVisible(composer)) {
+}
+
+export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> {
+  if (!await resolveChatGptComposer(page)) {
     throw new Error("ChatGPT authentication could not be verified: no visible composer is present");
   }
 }
@@ -242,8 +273,9 @@ export async function detectChatGptAccountCapabilities(
   page: Page,
   options: { selectorTimeoutMs?: number; stableAbsenceMs?: number } = {},
 ): Promise<ChatGptWebAccountCapabilities & { extraHighAvailable: boolean }> {
-  const composers = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true });
-  const composer = composers;
+  const composer = await resolveChatGptComposer(page);
+  if (!composer) throw new Error("ChatGPT account capability probe could not resolve a visible composer");
+  const composers = composer;
   const composerForm = composer.locator("xpath=ancestor::form[1]");
   const effortButton = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
   const deadline = Date.now() + (options.selectorTimeoutMs ?? 30_000);
