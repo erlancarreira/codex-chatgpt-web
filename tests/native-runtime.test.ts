@@ -29,6 +29,10 @@ function dependencies(
       proAvailable: true,
     }),
     saveConfig: () => {},
+    platform: "linux",
+    tunnelStatus: () => ({ ok: true, processRunning: true, healthy: true, ready: true, state: "ready", detail: "ready" }),
+    connectTunnel: () => {},
+    waitForTunnelReady: async () => ({ ok: true, processRunning: true, healthy: true, ready: true, state: "ready", detail: "ready" }),
     ...overrides,
   };
 }
@@ -39,6 +43,51 @@ describe("native Codex runtime preparation", () => {
     const prepared = await prepareNativeRuntime(original, dependencies());
 
     expect(prepared).toBe(original);
+  });
+
+
+  test("reconnects the full-mode tunnel on Windows before releasing the native runtime", async () => {
+    const original = config({ browserHost: "managed-chrome" });
+    let connected = 0;
+    let waited = 0;
+    const deps = dependencies({
+      platform: "win32",
+      tunnelStatus: () => ({ ok: false, processRunning: false, healthy: false, ready: false, state: "stopped", detail: "stopped" }),
+      connectTunnel: () => { connected += 1; },
+      waitForTunnelReady: async () => {
+        waited += 1;
+        return { ok: true, processRunning: true, healthy: true, ready: true, state: "ready", detail: "ready" };
+      },
+    });
+
+    await expect(prepareNativeRuntime(original, deps)).resolves.toBe(original);
+    expect(connected).toBe(1);
+    expect(waited).toBe(1);
+  });
+
+  test("does not reconnect an already-ready Windows tunnel", async () => {
+    const original = config({ browserHost: "managed-chrome" });
+    let connected = 0;
+    const deps = dependencies({
+      platform: "win32",
+      connectTunnel: () => { connected += 1; },
+    });
+
+    await expect(prepareNativeRuntime(original, deps)).resolves.toBe(original);
+    expect(connected).toBe(0);
+  });
+
+  test("does not require a tunnel for browser-only native runtime", async () => {
+    const original = config({ mode: "browser-only", browserHost: "managed-chrome" });
+    let connected = 0;
+    const deps = dependencies({
+      platform: "win32",
+      tunnelStatus: () => ({ ok: false, processRunning: false, healthy: false, ready: false, state: "stopped", detail: "stopped" }),
+      connectTunnel: () => { connected += 1; },
+    });
+
+    await expect(prepareNativeRuntime(original, deps)).resolves.toBe(original);
+    expect(connected).toBe(0);
   });
 
   test("fails closed when the managed Chrome session is missing", async () => {

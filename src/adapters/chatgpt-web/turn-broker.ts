@@ -136,6 +136,7 @@ interface BrokerResponse {
   id: string;
   result?: unknown;
   error?: string;
+  terminal?: true;
 }
 
 const brokers = new Map<string, TurnBroker>();
@@ -890,9 +891,10 @@ export class TurnBroker implements TurnBrokerOwner {
   }
 
   private writeSocketResponse(socket: Socket, response: BrokerResponse): void {
-    const line = `${JSON.stringify(response)}\n`;
+    const terminalResponse = { ...response, terminal: true as const };
+    const line = `${JSON.stringify(terminalResponse)}\n`;
     if (line.length > MAX_BROKER_LINE_CHARS) {
-      socket.end(`${JSON.stringify({ id: response.id, error: "turn broker response exceeds size limit" } satisfies BrokerResponse)}\n`);
+      socket.end(`${JSON.stringify({ id: response.id, error: "turn broker response exceeds size limit", terminal: true } satisfies BrokerResponse)}\n`);
       return;
     }
     socket.end(line);
@@ -1307,7 +1309,8 @@ export async function callTurnBroker<T>(
       }
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
         || ("result" in parsed) === ("error" in parsed)
-        || ("error" in parsed && (typeof parsed.error !== "string" || !parsed.error))) {
+        || ("error" in parsed && (typeof parsed.error !== "string" || !parsed.error))
+        || (parsed.terminal !== undefined && parsed.terminal !== true)) {
         finishError(new Error("ChatGPT web turn broker returned an invalid response frame"));
         return;
       }
@@ -1316,6 +1319,7 @@ export async function callTurnBroker<T>(
         return;
       }
       response = parsed;
+      if (parsed.terminal === true && !settleOnResponseFrame) socket.end();
       if (settleOnResponseFrame) {
         // Long-polls finish on the full frame; their peer can otherwise keep both halves open.
         finishResponse();
