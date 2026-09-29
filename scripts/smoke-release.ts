@@ -104,10 +104,13 @@ try {
   }
 
   const unauthenticatedModels = await fetch(`http://127.0.0.1:${port}/v1/models`);
-  const unauthenticatedModelsBody = await unauthenticatedModels.json() as { error?: { message?: string } };
-  if (unauthenticatedModels.status !== 502
-    || !unauthenticatedModelsBody.error?.message?.includes("incoming Bearer authorization")) {
-    throw new Error(`native model passthrough did not fail closed without Codex auth: ${JSON.stringify(unauthenticatedModelsBody)}`);
+  const unauthenticatedModelsBody = await unauthenticatedModels.json() as {
+    models?: Array<{ slug?: string }>;
+    error?: { message?: string };
+  };
+  if (unauthenticatedModels.status !== 200
+    || !unauthenticatedModelsBody.models?.some(model => model.slug === "chatgpt-web/gpt-5.6-sol")) {
+    throw new Error(`standalone ChatGPT Web model catalog was unavailable: ${JSON.stringify(unauthenticatedModelsBody)}`);
   }
   const websocketNegotiation = await fetch(`http://127.0.0.1:${port}/v1/responses`);
   if (websocketNegotiation.status !== 426) {
