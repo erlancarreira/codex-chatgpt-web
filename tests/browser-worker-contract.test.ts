@@ -603,7 +603,7 @@ test("chat preparation preserves page-read and composer errors instead of report
 });
 
 test("a stalled DOM observation fails within its probe budget", async () => {
-  expect(CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS).toBe(5_000);
+  expect(CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS).toBe(15_000);
   expect(MAX_CHATGPT_BROWSER_PAGE_REBINDS).toBe(2);
   await expect(withChatGptBrowserObservationTimeout(
     new Promise<never>(() => {}),

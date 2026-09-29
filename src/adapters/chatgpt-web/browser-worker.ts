@@ -1181,7 +1181,7 @@ export function remainingStageBudgetMs(
   return Math.max(250, timeoutMs - awakeMs);
 }
 
-export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 5_000;
+export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 15_000;
 export const MAX_CHATGPT_BROWSER_PAGE_REBINDS = 2;
 
 export class ChatGptBrowserObservationTimeoutError extends Error {
@@ -4945,7 +4945,7 @@ export class ChatGptBrowserWorker {
           await rebindLauncherPage(attempt, cause, abortSignal);
         } else {
           console.warn(
-            `[chatgpt-web] browser turn ${turn.traceId} is reloading its accepted managed page after a missing assistant DOM: `
+            `[chatgpt-web] browser turn ${turn.traceId} is reloading its managed page after a stalled DOM observation: `
             + redactChatGptUiDiagnostic(cause.message),
           );
           const reloadSignal = abortSignal ?? turn.abortSignal;
@@ -5000,9 +5000,10 @@ export class ChatGptBrowserWorker {
       // compaction needs it too; acquiring MCP tools is not a prerequisite.
       const launcherObservationRecovery = launcherSurfaceId !== undefined
         && this.config.browserHostDescriptorPath !== undefined;
-      const managedAssistantObservationRecovery = launcherSurfaceId === undefined
+      const managedObservationRecovery = launcherSurfaceId === undefined
         && maintenancePage === undefined;
-      const assistantObservationRecovery = launcherObservationRecovery || managedAssistantObservationRecovery;
+      const submissionObservationRecovery = launcherObservationRecovery || managedObservationRecovery;
+      const assistantObservationRecovery = launcherObservationRecovery || managedObservationRecovery;
       await diagnostics.capture(page, "browser-page-acquired");
       console.info(
         `[chatgpt-web] browser turn ${turn.traceId} opened (transport=${prepared.multipart ? `multipart-${prepared.multipart.parts.length}` : "inline"}, maxMessageChars=${maxMessageChars}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length}, compactionTrimmedMessages=${prepared.trimmedCompactionMessages ?? 0})`,
@@ -5111,7 +5112,7 @@ export class ChatGptBrowserWorker {
                 submissionRejection.begin(page);
               } },
               undefined,
-              launcherObservationRecovery
+              submissionObservationRecovery
                 ? async (...args) => {
                   const recovered = await recoverSubmissionObservation(...args);
                   stageBaseline = recovered.baseline;
@@ -5277,7 +5278,7 @@ export class ChatGptBrowserWorker {
             await turn.onSendActivated?.();
           } },
           completionTracker,
-          launcherObservationRecovery
+          submissionObservationRecovery
             ? async (...args) => {
               const recovered = await recoverSubmissionObservation(...args);
               submissionBaseline = recovered.baseline;
@@ -5394,21 +5395,22 @@ export class ChatGptBrowserWorker {
               snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
             }
           } catch (error) {
-            if (!(error instanceof ChatGptBrowserObservationTimeoutError) || !launcherSurfaceId) throw error;
+            if (!(error instanceof ChatGptBrowserObservationTimeoutError) || !assistantObservationRecovery) throw error;
             consecutiveObservationRebinds += 1;
             if (consecutiveObservationRebinds > MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
               throw new Error(
-                `ChatGPT browser DOM remained unresponsive after ${MAX_CHATGPT_BROWSER_PAGE_REBINDS} same-page rebinds`,
+                `ChatGPT browser DOM remained unresponsive after ${MAX_CHATGPT_BROWSER_PAGE_REBINDS} page recoveries`,
                 { cause: error },
               );
             }
-            await rebindLauncherPage(consecutiveObservationRebinds, error, turn.abortSignal);
-            submissionBaseline = {
-              ...submissionBaseline,
-              userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),
-              responseTurns: page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR),
-              domCache: {},
-            };
+            const recovered = await recoverAssistantObservation(
+              consecutiveObservationRebinds,
+              error,
+              submissionBaseline,
+              turn.abortSignal,
+            );
+            page = recovered.page;
+            submissionBaseline = recovered.baseline;
             responseTurn = {
               ...responseTurn,
               locator: page.locator(chatGptAssistantTurnSelector(responseTurn.identity)),
