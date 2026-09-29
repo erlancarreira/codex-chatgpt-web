@@ -1163,6 +1163,54 @@ test("adapter compact returns one same-agent handoff and preserves a pre-existin
   }
 });
 
+test("automatic compaction falls back to a fresh browser turn when no retained conversation is available", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-fresh-compact-fallback-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://fresh-compact-fallback-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "managed-chrome",
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: true,
+    },
+  };
+  const broker = TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!);
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const compact = request(true);
+  const events: AdapterEvent[] = [];
+  let runs = 0;
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    runs += 1;
+    expect(turn.requireRetainedConversation).not.toBeTrue();
+    return "Fresh fallback checkpoint";
+  };
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      compact,
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    const text = events
+      .filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => event.type === "text_delta")
+      .map(event => event.text)
+      .join("");
+    expect(runs).toBe(1);
+    expect(text).toContain("Fresh fallback checkpoint");
+    expect(text).toContain("CODEX_LATEST_USER_PROMPT_JSON");
+    expect(events.some(event => event.type === "error")).toBeFalse();
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a compact HTTP observer can reconnect without sending a second retained-chat message", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-compact-reconnect-"));
   const provider: CodexProviderConfig = {

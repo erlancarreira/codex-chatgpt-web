@@ -873,7 +873,7 @@ export function createChatGptWebAdapter(
           const structuredCompactionRequired = parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
             && configuredCapabilities.localToolsEnabled;
           if (structuredCompactionRequired
-            && (!retainedLauncherDescriptor || (!manualRequest && !structuredBroker))) {
+            && ((manualRequest && !retainedLauncherDescriptor) || (!manualRequest && !structuredBroker))) {
             emit({
               type: "error",
               message: manualRequest
