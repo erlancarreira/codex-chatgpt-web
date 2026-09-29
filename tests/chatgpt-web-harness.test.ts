@@ -3811,6 +3811,19 @@ test("an interrupted turn's abort notice is not mistaken for the next turn's ins
   ]);
   expect(priorChatGptAbortedTurnIds(request)).toEqual(["turn_test_interrupted"]);
 
+  // A delayed replay from the already-aborted turn is stale transport history, not a new
+  // instruction for the current native turn.
+  ((request._rawBody as { input: unknown[] }).input).push({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "Stale interrupted request replay" }],
+    internal_chat_message_metadata_passthrough: { turn_id: "turn_test_interrupted" },
+  });
+  expect(extractChatGptTurnUserRevision(request)).toEqual([
+    { type: "input_text", text: "Inspect the project" },
+  ]);
+  ((request._rawBody as { input: unknown[] }).input).pop();
+
   // A genuine steering message from a foreign turn must still be rejected.
   const steered = structuredClone(request);
   ((steered._rawBody as { input: unknown[] }).input).push({

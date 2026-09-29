@@ -250,7 +250,11 @@ export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unkn
   const identity = extractChatGptTurnIdentity(parsed);
   const turnId = identity.turnId;
   if (!turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser-session replay");
-  const revision = latestChatGptTurnUserRevision(parsed, turnId);
+  const revision = latestChatGptTurnUserRevision(
+    parsed,
+    turnId,
+    new Set(priorChatGptAbortedTurnIds(parsed)),
+  );
   if (!revision) throw new Error("ChatGPT web requires a current-turn user message for browser-session replay");
   // A pre-turn compact may summarize an earlier user message before native Codex continues
   // under its new turn id without adding a new human message. Accept only our exact completed
@@ -263,12 +267,17 @@ export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unkn
   return revision.content;
 }
 
-function latestChatGptTurnUserRevision(parsed: CodexParsedRequest, expectedTurnId?: string): ChatGptTurnUserRevision | undefined {
+function latestChatGptTurnUserRevision(
+  parsed: CodexParsedRequest,
+  expectedTurnId?: string,
+  ignoredTurnIds: ReadonlySet<string> = new Set(),
+): ChatGptTurnUserRevision | undefined {
   const body = record(parsed._rawBody);
   const input = Array.isArray(body?.input) ? body.input : [];
   const metadata = clientTurnMetadata(parsed);
   for (let index = input.length - 1; index >= 0; index -= 1) {
     const revision = userRevision(input[index], expectedTurnId, metadata);
+    if (revision?.turnId !== undefined && ignoredTurnIds.has(revision.turnId)) continue;
     if (revision) return revision;
   }
   return recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed))?.source;
