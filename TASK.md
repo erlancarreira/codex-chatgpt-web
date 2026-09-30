@@ -99,16 +99,16 @@ Acceptance:
 - [x] Centralize transport-failure classification.
 - [x] Centralize retry/recovery policy.
 - [x] Add explicit benign/recoverable/retryable/terminal classifications.
-- [ ] Remove scattered retry decisions from browser code where migrated.
+- [x] Remove scattered retry decisions from browser code where migrated.
 - [x] Add bounded recovery budgets.
-- [ ] Add tests for known historical failures.
+- [x] Add tests for known historical failures.
 
 Historical scenarios:
 - [x] HTTP 200 + data + post-response `ERR_ABORTED`.
-- [ ] Missing assistant DOM while network progresses.
-- [ ] Surface rebind during an active stream.
+- [x] Missing assistant DOM while network progresses.
+- [x] Surface rebind during an active stream.
 - [x] Secondary 404 after a valid primary response.
-- [ ] Browser observation timeout.
+- [x] Browser observation timeout.
 - [x] Real transport failure before response/data.
 
 ## Phase 7 — compaction engine isolation
@@ -201,3 +201,4 @@ Acceptance:
 - 2026-09-30 — Phases 1–4 core foundations implemented: deterministic turn reducer, bounded single-writer actor, per-request transport state, CDP-primary/Playwright-fallback tracker, request correlation and regression coverage.
 - 2026-09-30 — Main response observation path converted from fixed 250 ms polling to DOM/MCP/network event wakes with a named watchdog only. Missing-assistant/stream-failure/stall decisions centralized in a pure lifecycle policy.
 - 2026-09-30 — Phase 5 completed: MutationObserver-backed DOM snapshots now flow through a typed lifecycle adapter with monotonic revisions; surface loss/remount are non-terminal observations and network-active turns remain alive.
+- 2026-09-30 — Phase 6 completed: browser observation/rebind retries now use named bounded Core recovery budgets; historical failure semantics are locked in a dedicated regression suite.
