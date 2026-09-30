@@ -1,94 +1,75 @@
-# CodexNative Web
+# CodexNative Web — Guia de instalação e operação
 
-CodexNative Web é a distribuição mantida neste repositório para executar modelos do ChatGPT Web dentro do fluxo nativo do Codex, com integração de browser, Responses bridge, MCP, ferramentas locais, streaming e compactação de contexto.
+Este documento descreve o fluxo operacional do **CodexNative Web**: instalação, configuração do Codex, login no ChatGPT, Full Harness, tunnel, atualização, validação e diagnóstico.
 
-Este projeto deriva de `miuuyy/codex-chatgpt-web`, mas passa a ser tratado como uma linha de manutenção própria. O objetivo é permitir que as correções e decisões deste fork evoluam sem confundir o estado do upstream com o estado validado aqui.
+Repositório oficial:
 
-> **Repositório desta distribuição:** `erlancarreira/codex-chatgpt-web`
->
-> **Upstream de origem:** `miuuyy/codex-chatgpt-web`
+```text
+https://github.com/erlancarreira/codex-chatgpt-web
+```
 
-## Identidade do projeto
+## 1. Componentes
 
-O nome de produto usado nesta documentação é **CodexNative Web**.
+Uma instalação completa pode envolver:
 
-Por compatibilidade, alguns identificadores internos ainda mantêm os nomes históricos `codex-chatgpt-web` e `Codex Web GPT`. Isso inclui, entre outros:
+- launcher desktop;
+- runtime local;
+- bridge Responses em `127.0.0.1:17841`;
+- browser incorporado autenticado no ChatGPT;
+- integração do Codex;
+- `tunnel-client` gerenciado pelo launcher;
+- OpenAI Tunnel;
+- conector ChatGPT **Codex Native2**;
+- MCP broker para tools locais.
 
-- comando `codex-chatgpt-web`;
-- diretório de runtime `~/.codex-chatgpt-web`;
-- nome atual do launcher `Codex Web GPT`;
-- aliases e perfis internos já usados pelo tunnel/runtime;
-- partição persistente do browser.
+O usuário não deve copiar credenciais ou perfis de outra pessoa.
 
-Essa decisão evita uma migração destrutiva e permite atualizar uma instalação existente sem perder login, configurações, runtime, integrações ou estado local.
+## 2. Estrutura local
 
-### Importante: não instalar upstream e fork lado a lado
+Os identificadores internos atuais são mantidos estáveis para preservar compatibilidade entre atualizações.
 
-No estado atual, CodexNative Web é um projeto separado no Git, mas **não é uma instalação isolada do upstream no mesmo usuário do sistema operacional**.
+Diretórios principais:
 
-Como os identificadores de runtime e perfil ainda são compartilhados, instalar uma release do upstream depois deste fork pode substituir arquivos ou alterar a configuração usada pelo CodexNative Web.
+```text
+~/.codex-chatgpt-web/
+~/.codex-chatgpt-web/versions/
+~/.codex-chatgpt-web/config.json
+~/.codex-chatgpt-web/diagnostics/browser-turns/
+~/.codex/config.toml
+```
 
-Para uma máquina que usa esta distribuição, mantenha apenas o canal deste fork.
+Windows:
 
-Uma futura separação física completa exigiria uma mudança coordenada de `appId`, diretórios de perfil, browser partition, runtime home, serviços e aliases de tunnel. Isso deve ser tratado como uma migração própria, não como uma simples troca de nome.
+```text
+%USERPROFILE%\.codex-chatgpt-web
+%USERPROFILE%\.codex\config.toml
+```
 
-## O que esta distribuição adiciona
+Não use duas distribuições diferentes que controlem esses mesmos diretórios no mesmo usuário do sistema operacional.
 
-Além da base do upstream, esta linha contém correções e endurecimentos implementados e validados para o uso real no Windows e no fluxo Codex + ChatGPT Web.
+## 3. Instalação
 
-Entre as mudanças principais estão:
-
-- correções no broker de turnos e no ciclo de vida de named pipes no Windows;
-- recuperação automática do tunnel gerenciado após reinicialização do runtime;
-- integração do Codex usando o provider nativo `openai` e bridge local;
-- observação do lifecycle do turno também pela rede/CDP, reduzindo dependência exclusiva do DOM;
-- recuperação de surface sem aceitar silenciosamente uma conversa não relacionada;
-- tratamento de `net::ERR_ABORTED` após resposta HTTP válida e dados já recebidos como transição possível da SPA, e não como falha automática do turno;
-- compactação de contexto com serialização da projeção final, sem tratar reescritas provisórias do renderer como retração de texto já entregue ao Codex;
-- diagnósticos por turno em `~/.codex-chatgpt-web/diagnostics/browser-turns`.
-
-Commits de referência desta linha:
-
-- `c44f755` — Windows turn broker, compaction e tunnel recovery;
-- `d238e71` — network tracking do turno do ChatGPT;
-- `43db4f3` — compactação com renderer rewrite e tratamento de aborted streams.
-
-## Modelo de instalação
-
-Existem dois canais de instalação.
-
-### 1. Release do CodexNative Web — recomendado
-
-Quando uma release desta distribuição estiver publicada em `erlancarreira/codex-chatgpt-web`, o launcher deve ser instalado a partir **deste fork**, não do upstream.
-
-Os instaladores desta distribuição usam `erlancarreira/codex-chatgpt-web` como canal padrão de releases. As variáveis `CODEX_WEB_GPT_REPOSITORY` e `CODEX_CHATGPT_WEB_REPOSITORY` continuam disponíveis apenas para desenvolvimento, mirrors ou testes controlados.
-
-#### Windows PowerShell
+### Windows
 
 ```powershell
 irm https://raw.githubusercontent.com/erlancarreira/codex-chatgpt-web/main/scripts/install-launcher.ps1 | iex
 ```
 
-O instalador resolve a release mais recente deste fork, baixa o artefato apropriado para Windows e usa os checksums publicados pela release.
-
-#### macOS / Linux
+### macOS / Linux
 
 ```bash
-curl -fsSL   https://raw.githubusercontent.com/erlancarreira/codex-chatgpt-web/main/scripts/install-launcher.sh | sh
+curl -fsSL https://raw.githubusercontent.com/erlancarreira/codex-chatgpt-web/main/scripts/install-launcher.sh | sh
 ```
 
-O mesmo princípio vale para atualizações: o launcher e os scripts verificam releases em `erlancarreira/codex-chatgpt-web`, não no upstream.
+O canal de release é:
 
-> Antes da primeira release binária do fork, use a instalação por código-fonte descrita abaixo.
+```text
+erlancarreira/codex-chatgpt-web
+```
 
-### 2. Instalação por código-fonte
+As variáveis de repository override existem apenas para desenvolvimento, mirrors e testes controlados. Uma instalação normal não precisa defini-las.
 
-Requisitos:
-
-- Git;
-- Bun **1.4.0**;
-- acesso ao repositório;
-- Codex instalado separadamente.
+### Código-fonte
 
 ```bash
 git clone https://github.com/erlancarreira/codex-chatgpt-web.git
@@ -98,81 +79,172 @@ bun install --frozen-lockfile
 bun run app
 ```
 
-Para desenvolvimento e validação:
+Requisito para desenvolvimento: Bun **1.4.0**.
 
-```bash
-bun run typecheck
-bun test
-bun run build
-```
+## 4. Setup inicial
 
-O launcher e o runtime continuam usando a estrutura de compatibilidade do projeto:
+1. abra o launcher;
+2. faça login no ChatGPT no browser incorporado;
+3. confirme o browser smoke test;
+4. escolha Browser-only ou Full Harness;
+5. instale os modelos pelo launcher;
+6. reinicie o Codex uma vez;
+7. aguarde o catálogo de modelos ser validado;
+8. escolha um modelo **(Web)** no Codex.
 
-- runtime: `~/.codex-chatgpt-web`;
-- versões: `~/.codex-chatgpt-web/versions/`;
-- configuração do runtime: `~/.codex-chatgpt-web/config.json`;
-- diagnósticos: `~/.codex-chatgpt-web/diagnostics/browser-turns/`;
-- configuração do Codex: `~/.codex/config.toml`.
+## 5. Browser-only
 
-No Windows, o equivalente normalmente fica em:
+Use Browser-only quando o objetivo for apenas enviar turns para o ChatGPT Web.
+
+Não precisa de:
+
+- Tunnel ID;
+- API key de tunnel;
+- conector MCP.
+
+O browser autenticado e a bridge local são suficientes.
+
+## 6. Full Harness
+
+Full Harness adiciona ferramentas locais ao fluxo.
+
+Ele exige:
+
+- modelos instalados no Codex;
+- OpenAI Tunnel;
+- API key com **Tunnels Read + Use**;
+- `tunnel-client`;
+- conector **Codex Native2** no ChatGPT.
+
+### O tunnel-client é automático
+
+Não peça para o usuário instalar o binário manualmente.
+
+O setup do CodexNative Web instala uma versão fixada do `openai/tunnel-client`, valida integridade/versão e usa o binário gerenciado pelo runtime.
+
+O usuário fornece somente o Tunnel ID e a API key.
+
+## 7. Criar o OpenAI Tunnel
+
+No launcher:
+
+1. abra **MCP**;
+2. clique em **Open Tunnels**;
+3. crie um tunnel;
+4. copie o **Tunnel ID**.
+
+O tunnel precisa pertencer à conta OpenAI usada para o conector do ChatGPT.
+
+## 8. Criar a API key
+
+Crie uma API key comum com:
 
 ```text
-%USERPROFILE%\.codex-chatgpt-web
-%USERPROFILE%\.codex\config.toml
+Tunnels: Read + Use
 ```
 
-## Primeiro setup
+Não use Admin key se ela não for necessária.
 
-A instalação do launcher e a integração com o Codex são etapas separadas.
+A chave:
 
-### Etapa 1 — abrir o launcher e autenticar
+- fica armazenada localmente;
+- não deve ir para logs;
+- não deve ser commitada;
+- não deve ser compartilhada entre usuários.
 
-1. Abra o launcher.
-2. Entre na sua própria conta do ChatGPT no browser incorporado.
-3. Execute o teste/smoke de browser.
-4. Confirme que a sessão está autenticada antes de instalar os modelos no Codex.
+## 9. Connect harness
 
-A sessão do ChatGPT pertence ao perfil local do launcher e não deve ser compartilhada.
+No launcher:
 
-### Etapa 2 — escolher o modo
+1. informe o Tunnel ID;
+2. informe a API key;
+3. clique em **Connect harness**.
 
-Há dois caminhos principais.
+Durante esse processo o launcher prepara o runtime, instala/verifica o tunnel-client e inicia a conexão.
 
-**Browser-only**
+Se **Connect harness** estiver indisponível, primeiro conclua **Install models**, reinicie o Codex e aguarde a validação do catálogo.
 
-- usa os modelos Web disponíveis na conta;
-- envia e lê a conversa pelo browser;
-- não disponibiliza ferramentas locais do Codex ao ChatGPT.
+## 10. Criar o conector ChatGPT
 
-**Full harness**
+Depois que o tunnel estiver conectado:
 
-- usa os modelos Web disponíveis na conta;
-- mantém a bridge Responses local;
-- conecta ferramentas e filesystem do task atual por MCP;
-- usa o tunnel configurado para o conector do ChatGPT.
+1. abra ChatGPT **Settings**;
+2. habilite **Developer Mode**;
+3. abra **Plugins / Connectors**;
+4. crie um conector;
+5. escolha **Tunnel**;
+6. selecione o tunnel correto;
+7. use **Authentication: None**;
+8. defina o nome exato:
 
-Para uso de desenvolvimento com ferramentas, Full harness é o modo recomendado.
+```text
+Codex Native2
+```
 
-### Etapa 3 — instalar a rota do Codex
+9. abra **Permissions**;
+10. selecione **Allow all actions**.
 
-O launcher deve gerenciar a integração. Não é necessário editar `config.toml` manualmente em uma instalação normal.
+Depois volte ao launcher e execute **Verify runtime**.
 
-A integração atual usa o provider nativo do Codex:
+## 11. O que o Verify runtime deve provar
+
+A instalação Full Harness deve confirmar:
+
+- proxy Responses saudável;
+- tunnel-client instalado e íntegro;
+- runtime key armazenada;
+- launcher/runtime com ownership correto;
+- tunnel saudável;
+- tunnel ready;
+- conector **Codex Native2** disponível.
+
+## 12. Instalação para outra pessoa
+
+Nunca envie um diretório `.codex-chatgpt-web` já configurado.
+
+Cada usuário precisa criar sua própria instalação e suas próprias credenciais.
+
+Checklist:
+
+```text
+[ ] instalar CodexNative Web
+[ ] login próprio no ChatGPT
+[ ] browser smoke OK
+[ ] instalar modelos
+[ ] reiniciar Codex
+[ ] modelo (Web) disponível
+[ ] criar Tunnel ID próprio
+[ ] criar API key própria: Tunnels Read + Use
+[ ] Connect harness
+[ ] Developer Mode no ChatGPT
+[ ] criar Codex Native2
+[ ] Authentication: None
+[ ] Allow all actions
+[ ] Verify runtime
+[ ] testar turno simples
+[ ] testar uma tool local
+```
+
+Se a pessoa não precisa de tools locais, pare no Browser-only e não configure tunnel.
+
+## 13. Integração do Codex
+
+O launcher gerencia a rota.
+
+A configuração usa o provider nativo:
 
 ```toml
 model_provider = "openai"
 openai_base_url = "http://127.0.0.1:17841/v1"
 ```
 
-O modelo selecionado será uma entrada `chatgpt-web/...`, por exemplo:
+Exemplo de modelo:
 
 ```toml
 model = "chatgpt-web/gpt-5.6-sol"
 ```
 
-Depois de instalar ou alterar a rota/modelos, reinicie o Codex uma vez.
-
-A rota é reversível:
+Comandos:
 
 ```bash
 codex-chatgpt-web route status
@@ -180,132 +252,70 @@ codex-chatgpt-web route connect
 codex-chatgpt-web route disconnect
 ```
 
-### Etapa 4 — Full harness e MCP
-
-No modo Full harness:
-
-1. configure o tunnel/runtime key pelo launcher;
-2. habilite Developer Mode no ChatGPT quando necessário;
-3. configure o conector esperado pelo launcher;
-4. valide que o conector está disponível;
-5. execute o diagnóstico antes de iniciar trabalho crítico.
-
-O conector usado atualmente pela configuração desta linha é **Codex Native2**.
-
-Comandos úteis:
+## 14. Runtime e tunnel
 
 ```bash
-codex-chatgpt-web tunnel status
 codex-chatgpt-web doctor
 codex-chatgpt-web browser check
-codex-chatgpt-web route status
+
+codex-chatgpt-web tunnel status
+codex-chatgpt-web tunnel start
+codex-chatgpt-web tunnel restart
+codex-chatgpt-web tunnel stop
 ```
 
-No Windows, quando o comando não estiver no `PATH`, ele pode ser executado diretamente a partir da versão instalada em `%USERPROFILE%\.codex-chatgpt-web\versions\...`.
+No Windows, se o comando não estiver no PATH, use o executável da versão instalada dentro de:
 
-## Como a comunicação funciona
+```text
+%USERPROFILE%\.codex-chatgpt-web\versions\
+```
 
-O fluxo esperado é:
+## 15. Comunicação do turno
 
 ```text
 Codex
   |
-  | Responses protocol
   v
-127.0.0.1:17841
+Responses bridge local
   |
-  v
-CodexNative Web runtime
+  +--> browser ChatGPT
+  |      +--> DOM
+  |      +--> Network/CDP
   |
-  +--> browser autenticado em chatgpt.com
-  |      |
-  |      +--> DOM: conteúdo renderizado e controles
-  |      +--> Network/CDP: lifecycle e progresso do transporte
-  |
-  +--> MCP broker / tunnel
+  +--> MCP broker
          |
-         +--> terminal, filesystem e tools do task atual
+         v
+     tunnel-client
+         |
+         v
+     OpenAI Tunnel
+         |
+         v
+     Codex Native2
 ```
 
-O DOM não deve ser a única autoridade para decidir se um turno foi aceito ou se o transporte ainda está ativo. A implementação atual combina sinais do DOM, tráfego de rede/CDP, progresso MCP e fences de conclusão.
+A implementação usa múltiplos sinais para o lifecycle do turno. DOM isolado não é considerado evidência suficiente para todos os estados.
 
-## Compactação de contexto
+## 16. Compactação
 
-A compactação é um turno de sumarização separado.
+Na compactação:
 
-Para compactação:
+1. o Codex solicita um checkpoint;
+2. o runtime cria um turn de compactação;
+3. o renderer pode reescrever conteúdo provisório;
+4. o runtime mantém a projeção atual;
+5. somente o resultado final entra no checkpoint;
+6. o Codex continua com o contexto compactado.
 
-1. o Codex solicita o checkpoint;
-2. o runtime envia o contexto que precisa ser resumido;
-3. o ChatGPT pode reformatar ou reescrever blocos provisórios enquanto renderiza;
-4. CodexNative Web mantém a projeção mais recente sem publicar esses blocos provisórios como resposta normal;
-5. somente a versão final é serializada para o contrato de compactação;
-6. o Codex continua a tarefa usando o checkpoint resultante.
+Isso evita que re-renderizações provisórias sejam interpretadas como alteração de texto já entregue ao cliente.
 
-Isso evita tratar uma reescrita normal do renderer como tentativa de alterar texto que já teria sido entregue ao cliente.
-
-## Atualização
-
-A regra é simples: **não misture canais**.
-
-Se a instalação é CodexNative Web, atualize sempre a partir de:
-
-```text
-erlancarreira/codex-chatgpt-web
-```
-
-O launcher/runtime usa versões instaladas em diretórios versionados. A atualização deve preservar:
-
-- perfil autenticado do ChatGPT;
-- `config.json`;
-- configuração do launcher;
-- integração do Codex;
-- chaves e configuração local do tunnel, conforme o mecanismo já existente.
-
-Após uma atualização que altere runtime, bridge ou integração:
-
-1. feche/reinicie o launcher quando solicitado;
-2. confirme `doctor`;
-3. confirme `route status`;
-4. execute um turno curto;
-5. quando a release tocar compactação, faça também um teste de compactação.
-
-## Validação mínima pós-instalação
-
-Uma instalação deve ser considerada saudável somente quando os itens abaixo estiverem válidos:
-
-```bash
-codex-chatgpt-web doctor
-codex-chatgpt-web route status
-codex-chatgpt-web browser check
-```
-
-Além disso:
-
-- `http://127.0.0.1:17841/healthz` deve responder `status: ok`;
-- um turno curto deve chegar a `turn-completed`;
-- Full harness deve conseguir executar uma tool autorizada;
-- uma compactação real deve concluir sem reconexão ou erro de consistência do Markdown.
-
-## Diagnóstico
-
-Os checkpoints por turno ficam em:
+## 17. Diagnósticos
 
 ```text
 ~/.codex-chatgpt-web/diagnostics/browser-turns/
 ```
 
-Os checkpoints permitem diferenciar problemas como:
-
-- falha antes do envio;
-- envio aceito sem surface válida;
-- resposta visível, porém estagnada;
-- falha real do transporte;
-- rebind da página;
-- compactação interrompida;
-- turno concluído.
-
-Um turno saudável normalmente termina com:
+Fluxo normal:
 
 ```text
 send-ready
@@ -314,55 +324,55 @@ response-visible
 turn-completed
 ```
 
-## Rollback
+Falhas ficam registradas no mesmo diretório com traceId e checkpoint.
 
-Antes de substituir manualmente um runtime em produção, crie uma cópia da versão instalada.
+Endpoint de saúde:
 
-Em releases normais, prefira reinstalar uma versão anterior publicada deste mesmo fork.
+```text
+http://127.0.0.1:17841/healthz
+```
 
-Evite restaurar somente arquivos isolados de uma release diferente se o manifesto, launcher ou runtime também tiver mudado.
+## 18. Atualização
 
-## Desenvolvimento e manutenção
+Atualize sempre pelo mesmo canal:
 
-Fluxo recomendado para alterações:
+Windows:
+
+```powershell
+irm https://raw.githubusercontent.com/erlancarreira/codex-chatgpt-web/main/scripts/install-launcher.ps1 | iex
+```
+
+macOS/Linux:
 
 ```bash
-git checkout main
-git pull --ff-only fork main
+curl -fsSL https://raw.githubusercontent.com/erlancarreira/codex-chatgpt-web/main/scripts/install-launcher.sh | sh
+```
 
+Após alterações de runtime/bridge:
+
+1. reinicie o launcher/runtime quando solicitado;
+2. rode doctor;
+3. confira route status;
+4. execute um turn curto;
+5. valide Full Harness;
+6. quando houver mudança de compactação, valide uma compactação real.
+
+## 19. Validação para desenvolvimento
+
+```bash
 bun install --frozen-lockfile
 bun run typecheck
 bun test
 bun run build
 ```
 
-Mudanças que afetem browser transport, streaming ou compactação também devem ter prova funcional real antes de release.
+Mudanças em browser transport, streaming, tunnel ou compactação também precisam de prova funcional real no runtime instalado.
 
-O critério para declarar uma correção como concluída não é apenas a suíte unitária: um turno real pelo runtime instalado deve completar no caminho usado pelo Codex.
+## 20. Segurança
 
-## Relação com o upstream
-
-O remote recomendado para desenvolvimento deste fork é:
-
-```text
-fork   -> git@github.com:erlancarreira/codex-chatgpt-web.git
-origin -> https://github.com/miuuyy/codex-chatgpt-web.git
-```
-
-Assim:
-
-- `fork/main` é a linha publicável do CodexNative Web;
-- `origin` continua disponível para acompanhar e incorporar mudanças do upstream;
-- atualizações do upstream devem ser integradas conscientemente, com testes das correções específicas deste fork.
-
-Não faça merge automático de upstream em produção sem executar a suíte e os testes reais de browser/compaction.
-
-## Status da instalação atual de desenvolvimento
-
-A linha validada no momento desta documentação inclui a correção de compactação e aborted streams até o commit:
-
-```text
-43db4f3 fix chatgpt compaction rewrites and aborted streams
-```
-
-A documentação deve ser atualizada sempre que o processo de instalação, o nome público, o diretório de perfil ou o canal de release mudar.
+- credenciais pertencem a um único usuário;
+- não salve API keys no Git;
+- não compartilhe browser profile;
+- mantenha permissões do Full Harness sob controle;
+- use apenas contas e recursos que o usuário está autorizado a acessar;
+- exporte apenas logs sanitizados quando precisar compartilhar diagnóstico.
