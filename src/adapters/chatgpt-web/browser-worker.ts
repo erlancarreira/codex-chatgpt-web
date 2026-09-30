@@ -1575,6 +1575,8 @@ function withBrowserTurnAbort<T>(promise: Promise<T>, signal?: AbortSignal): Pro
 
 export interface BrowserTurn {
   traceId: string;
+  /** Native Codex turn identity used only for structured lifecycle diagnostics. */
+  turnId?: string;
   modelId: string;
   reasoning?: string;
   modelFamily?: "5.6" | "6";
