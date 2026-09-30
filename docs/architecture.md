@@ -95,6 +95,70 @@ A name change uses the existing setup transaction, rejects active work, and clea
 only after success. The user must create a new plugin with that exact name. Renaming a display
 label does not itself replace a remote connector's cached schema; legacy connectors are still never reused.
 
+## Event-driven turn engine
+
+Automatic Web turns are governed by a backend-local turn engine. The browser owns the authenticated
+session and transport surface, but it does not own turn state. The implementation uses explicit
+ports/adapters around one single-writer actor per turn:
+
+```text
+Responses bridge
+      |
+      v
+WebTurnSupervisor
+      |
+      v
+TurnActor (one per turn, single writer)
+      |
+      +-- deterministic TurnState reducer
+      +-- bounded mailbox
+      +-- completion/failure policy
+      +-- named deadline/watchdog policy
+      +-- structured lifecycle journal
+             ^          ^          ^
+             |          |          |
+         CDP/network    DOM      MCP/tools
+         adapter        adapter   adapter
+```
+
+A turn changes state only through typed domain events. Browser, DOM, MCP, launcher, and watchdog
+producers cannot mutate turn state directly. Replaceable high-frequency DOM revisions may be
+coalesced inside the same causal segment; network, tool, cancellation, failure, and terminal events
+are never silently discarded. Terminal states cannot transition again.
+
+Transport evidence is stored per browser request instead of in one aggregate snapshot. Every
+candidate request keeps its own HTTP status, byte/chunk counters, completion/failure evidence, and
+request identity. A correlation policy selects the authoritative assistant transport and prevents
+an auxiliary request, such as a later 404, from overwriting a valid 200 streaming request.
+Playwright and CDP observations are deduplicated, with CDP preferred when both describe the same
+network lifecycle. A post-response `ERR_ABORTED` is classified from the exact request evidence
+instead of being treated as an unconditional turn failure.
+
+The DOM is a rendering/control adapter. `MutationObserver` revisions wake the turn engine when the
+assistant surface changes, but a detached or remounted renderer cannot terminate a turn whose
+authoritative transport is still progressing. DOM responsibilities are limited to rendered answer
+projection, controls/confirmations, and surface identity; network/CDP owns transport lifecycle.
+
+MCP is another event producer. Tool batches and calls have explicit requested, started, completed,
+and failed transitions. Current-turn MCP activity is causally stronger than a delayed browser send
+acknowledgement, so a tool request may prove an already-sent turn without regressing state when a
+late acknowledgement arrives. The tool runtime stays behind a port and preserves the outer Codex
+sandbox and approval contract.
+
+Compaction has its own lifecycle and final-projection boundary. Provisional ChatGPT renderer
+rewrites remain internal; only the final checkpoint projection is serialized into the handoff.
+Multipart acknowledgements and final submission synchronously refresh the named compaction liveness
+budget, while physical browser/helper settlement remains independently owned.
+
+Normal turn flow is event-driven. No fixed-interval operational polling or arbitrary sleep advances
+a turn. Timers have named responsibilities only: overall deadlines, transport/renderer watchdogs,
+launcher heartbeats, and bounded recovery budgets. The actor's `while` is a finite bounded-mailbox
+drain, not polling of external state.
+
+The runtime does not copy browser cookies or call private ChatGPT backend endpoints directly.
+Authentication and requests remain browser-owned; CDP/Playwright observe the browser transport.
+This preserves the Web-only product model without creating a second undocumented HTTP client.
+
 ## Browser lifecycle
 
 The desktop launcher owns one persistent Electron partition and up to five task-bound browser
