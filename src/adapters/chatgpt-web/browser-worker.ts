@@ -24,6 +24,7 @@ import {
   ChatGptMarkdownConsistencyError,
   type ChatGptMarkdownSegment,
 } from "./markdown";
+import { ChatGptCompactionProjection } from "./compaction-projection";
 import {
   CHATGPT_WEB_LUNA_MODEL_ID,
   CHATGPT_WEB_MODEL_ID,
@@ -5699,7 +5700,7 @@ export class ChatGptBrowserWorker {
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
       const markdownBuffer = turn.compaction
-        ? new ChatGptMarkdownBuffer(markdown => markdown, 750, false)
+        ? new ChatGptCompactionProjection()
         : new ChatGptMarkdownBuffer();
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
