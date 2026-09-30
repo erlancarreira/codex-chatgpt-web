@@ -153,3 +153,17 @@ test("current-turn MCP activity can prove acceptance before the transport respon
   expect(state.phase).toBe("tool_running");
   expect(state.hasTransportData).toBeTrue();
 });
+
+
+test("a tool request may prove acceptance before a delayed send acknowledgement without regressing state", () => {
+  let state = createTurnState();
+  state = apply(state, "runtime", { type: "prepare", at: 1 });
+  state = apply(state, "tool", { type: "tool_requested", at: 2, callIds: ["call-1"] });
+  expect(state.phase).toBe("waiting_tool");
+  state = apply(state, "runtime", { type: "submission_sent", at: 3 });
+  expect(state.phase).toBe("waiting_tool");
+  expect(state.activeToolCalls).toEqual(["call-1"]);
+  state = apply(state, "tool", { type: "tool_started", at: 4, callId: "call-1" });
+  state = apply(state, "tool", { type: "tool_completed", at: 5, callId: "call-1" });
+  expect(state.phase).toBe("streaming");
+});
