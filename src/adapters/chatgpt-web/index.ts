@@ -422,11 +422,14 @@ export function createChatGptWebAdapter(
           : "The Zero Risk Web model route requires ChatGPT Zero Risk interaction mode",
       );
     }
-    const lifecycle = manualRequest ? undefined : turnSupervisor.acquire(traceId);
+    const identity = extractChatGptTurnIdentity(parsed);
+    const lifecycle = manualRequest ? undefined : turnSupervisor.acquire(traceId, {
+      traceId,
+      ...(identity.turnId ? { turnId: identity.turnId } : {}),
+    });
     const mode = manualRequest
       ? { localTools: true }
       : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
-    const identity = extractChatGptTurnIdentity(parsed);
     const captureLunaCheckpoint = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
       && !parsed._compactionRequest
       && Boolean(identity.threadId && identity.turnId);
