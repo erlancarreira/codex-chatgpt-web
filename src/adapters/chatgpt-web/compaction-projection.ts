@@ -10,11 +10,19 @@ import {
  * renderer block while producing a checkpoint; only the final observed projection is serialized.
  */
 export class ChatGptCompactionProjection {
-  private readonly buffer = new ChatGptMarkdownBuffer(markdown => markdown, 750, false);
+  private buffer = new ChatGptMarkdownBuffer(markdown => markdown, 750, false);
 
   observe(segments: readonly ChatGptMarkdownSegment[]): string {
     this.buffer.observe([...segments]);
     return "";
+  }
+
+  /**
+   * A renderer/document remount invalidates only provisional compaction projection.
+   * Normal assistant turns deliberately do not have this escape hatch.
+   */
+  remount(): void {
+    this.buffer = new ChatGptMarkdownBuffer(markdown => markdown, 750, false);
   }
 
   finish(): { markdown: string; delta: string } {
