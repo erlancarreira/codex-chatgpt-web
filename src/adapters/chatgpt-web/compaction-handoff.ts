@@ -16,6 +16,11 @@ import {
 } from "./native-compaction-control";
 import type { BrokerToolResult, TurnBroker, TurnBrokerOwner } from "./turn-broker";
 import type { ChatGptTurnSession } from "./turn-execution";
+import {
+  createCompactionState,
+  reduceCompactionState,
+  type CompactionState,
+} from "../../core/compaction/compaction-session";
 
 export const LATEST_USER_PROMPT_MARKER = "CODEX_LATEST_USER_PROMPT_JSON";
 
@@ -300,8 +305,10 @@ export async function requestRetainedCompactionHandoff(
   const abortBrowser = () => browserAbort.abort(operationSignal.reason);
   let transaction: CompactionTransactionHandle | undefined;
   let browser: Promise<string> | undefined;
+  let lifecycle: CompactionState = createCompactionState();
   if (operationSignal.aborted) abortBrowser();
   else operationSignal.addEventListener("abort", abortBrowser, { once: true });
+
   try {
     const transactionPromise = broker.beginCompactionTransaction(traceId, operationTimeoutMs);
     void transactionPromise.then(lateTransaction => {
@@ -310,14 +317,18 @@ export async function requestRetainedCompactionHandoff(
       }
     }, () => {});
     transaction = await withCompactionAbort(transactionPromise, operationSignal);
+    lifecycle = reduceCompactionState(lifecycle, {
+      type: "wait_handoff",
+      at: Date.now(),
+      transactionId: transaction.handoffId,
+    });
+
     const instruction = structuredCompactionHandoffInstruction(transaction);
     const prepare = async () => ({ text: instruction, images: [], release: () => {} });
     browser = worker.run({
       traceId,
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
-      // The retained connector exposes only the one-shot control token embedded above. It does
-      // not receive an ordinary Codex tool environment for this checkpoint message.
       capabilities: { ...capabilities, localToolsEnabled: false },
       nativeConnector: true,
       prepare,
@@ -327,38 +338,43 @@ export async function requestRetainedCompactionHandoff(
       abortSignal: browserAbort.signal,
       onTextDelta: () => {},
     });
+
     const handoff = broker.waitForCompactionHandoff(transaction.token, operationSignal);
     const browserWithoutHandoff = browser.then<never>(() => {
-      // The control handler accepts the summary before replying to ChatGPT. A fully
-      // settled response without that receipt cannot become a successful checkpoint.
       throw new ChatGptWebAdapterError(
         "ChatGPT finished without sending the context summary to Codex. Check its response for a refusal or tool error.",
         { status: 409, errorType: "invalid_request_error", code: "compaction_handoff_missing", retryable: false },
       );
     });
     const summary = await withCompactionAbort(
-      Promise.race([
-        handoff,
-        browserWithoutHandoff,
-      ]),
+      Promise.race([handoff, browserWithoutHandoff]),
       operationSignal,
     );
-    // The one-shot control submission is the terminal event for this purpose-built response.
-    // ChatGPT may render no assistant text after a tool-only response, and therefore no Copy
-    // action. End our owned turn explicitly and wait for the launcher/helper cleanup handshake.
+    lifecycle = reduceCompactionState(lifecycle, { type: "handoff_received", at: Date.now() });
+
+    lifecycle = reduceCompactionState(lifecycle, { type: "retire_browser", at: Date.now() });
     browserAbort.abort(new ChatGptCompactionHandoffAccepted());
     await withCompactionAbort(
       browser.then(() => undefined, () => undefined),
       operationSignal,
     );
+    lifecycle = reduceCompactionState(lifecycle, { type: "browser_retired", at: Date.now() });
+    if (lifecycle.phase !== "completed") {
+      throw new Error(`Structured compaction ended in unexpected phase ${lifecycle.phase}`);
+    }
     return summary;
+  } catch (error) {
+    const reason = error instanceof Error ? error : new Error(String(error));
+    if (lifecycle.phase !== "completed" && lifecycle.phase !== "failed" && lifecycle.phase !== "cancelled") {
+      lifecycle = reduceCompactionState(lifecycle, operationSignal.aborted
+        ? { type: "cancel", at: Date.now(), reason: reason.message }
+        : { type: "fail", at: Date.now(), reason: reason.message });
+    }
+    throw error;
   } finally {
     browserAbort.abort();
     if (transaction) broker.abortCompactionTransaction(transaction.token);
     if (browser) {
-      // Logical cancellation is not physical retirement. The retained-session owner tracks
-      // physical settlement separately, so this helper must not turn its own deadline into an
-      // unbounded wait when the worker does not acknowledge abort immediately.
       await withCompactionAbort(
         browser.then(() => undefined, () => undefined),
         operationSignal,
