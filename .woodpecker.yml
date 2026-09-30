@@ -39,16 +39,22 @@ steps:
         tests/lifecycle-observability.test.ts
         tests/turn-lifecycle-protocol.test.ts
 
-  browser-contracts:
+  helper-ipc-contracts:
     image: oven/bun:1.4.0
     depends_on:
       - event-core
+    commands:
+      - bun test tests/launcher-helper-client.test.ts
+
+  browser-contracts:
+    image: oven/bun:1.4.0
+    depends_on:
+      - helper-ipc-contracts
     commands:
       - >
         bun test
         tests/browser-worker-contract.test.ts
         tests/browser-response-dom.test.ts
-        tests/launcher-helper-client.test.ts
 
   full-tests:
     image: oven/bun:1.4.0
