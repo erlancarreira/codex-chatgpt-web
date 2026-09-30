@@ -184,6 +184,32 @@ test("captured power UI excludes the user footer during streaming and completes 
   expect(userMarkdown.visibleText).toBe(complete.visibleText);
 });
 
+test("deferred Markdown mode lets compaction use the final renderer projection without streaming provisional text", () => {
+  const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0, false);
+  const first: ChatGptMarkdownSegment[] = [{
+    key: "summary",
+    tag: "p",
+    text: "Provisional compact summary",
+    html: "<p>Provisional compact summary</p>",
+    sourceStart: 0,
+    sourceEnd: 27,
+    streamable: true,
+  }];
+  const final: ChatGptMarkdownSegment[] = [{
+    ...first[0]!,
+    text: "Final compact summary",
+    html: "<p>Final compact summary</p>",
+    sourceEnd: 21,
+  }];
+  expect(buffer.observe(first, 0)).toBe("");
+  expect(buffer.observe(final, 1_000)).toBe("");
+  expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
+  expect(buffer.finish()).toEqual({
+    markdown: "Final compact summary",
+    delta: "Final compact summary",
+  });
+});
+
 test("captured power response keeps its Markdown ledger through final rendering", async () => {
   const streaming = await snapshot(powerStreamingHtml);
   const complete = await snapshot(powerCompleteHtml);

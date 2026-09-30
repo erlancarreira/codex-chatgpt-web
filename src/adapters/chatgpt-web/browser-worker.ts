@@ -122,6 +122,7 @@ export async function closeChatGptBrowserWorkers(): Promise<void> {
 
 export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
 export const CHATGPT_NETWORK_DOM_SETTLE_MS = 5_000;
+export const CHATGPT_ABORTED_STREAM_DOM_SETTLE_MS = 20_000;
 /**
  * How long a staged Bigger Context part may take to produce its assistant turn. A staged part is two
  * orders of magnitude larger than an ordinary prompt and ChatGPT reads all of it before answering.
@@ -843,6 +844,8 @@ export interface ChatGptSubmissionNetworkSnapshot {
   completed: boolean;
   failed: boolean;
   failureText?: string;
+  abortedAfterResponse: boolean;
+  abortText?: string;
   requestAt?: number;
   responseAt?: number;
   lastActivityAt?: number;
@@ -869,6 +872,7 @@ export class ChatGptSubmissionRejectionObserver {
       streamActive: false,
       completed: false,
       failed: false,
+      abortedAfterResponse: false,
       dataChunks: 0,
       dataBytes: 0,
     };
@@ -878,6 +882,41 @@ export class ChatGptSubmissionRejectionObserver {
     const now = Date.now();
     this.network.lastActivityAt = now;
     return now;
+  }
+
+  private activeRequestCount(): number {
+    return this.requests.size + this.cdpRequestIds.size;
+  }
+
+  private updateNetworkCompletion(now: number): void {
+    const active = this.activeRequestCount();
+    this.network.completed = this.network.requestSeen && !this.network.failed && active === 0;
+    this.network.streamActive = !this.network.failed && active > 0;
+    if (this.network.completed) this.network.completedAt = now;
+  }
+
+  private benignPostResponseAbort(errorText: string): boolean {
+    return /(?:^|::)ERR_ABORTED$/i.test(errorText.trim())
+      && this.network.responseSeen
+      && this.network.responseStatus !== undefined
+      && this.network.responseStatus >= 200
+      && this.network.responseStatus < 400
+      && (!this.network.cdpAttached || this.network.dataChunks > 0 || this.network.dataBytes > 0);
+  }
+
+  private recordNetworkFailure(errorText: string): void {
+    const now = this.markNetworkActivity();
+    if (this.benignPostResponseAbort(errorText)) {
+      this.network.abortedAfterResponse = true;
+      this.network.abortText = errorText;
+      this.network.failed = false;
+      this.network.failureText = undefined;
+      this.updateNetworkCompletion(now);
+      return;
+    }
+    this.network.failed = true;
+    this.network.streamActive = false;
+    this.network.failureText = errorText;
   }
 
   private readonly onRequest = (request: Request): void => {
@@ -892,6 +931,9 @@ export class ChatGptSubmissionRejectionObserver {
     this.network.completed = false;
     this.network.failed = false;
     this.network.failureText = undefined;
+    this.network.abortedAfterResponse = false;
+    this.network.abortText = undefined;
+    this.network.completedAt = undefined;
   };
 
   private readonly onResponse = (response: Response): void => {
@@ -918,19 +960,12 @@ export class ChatGptSubmissionRejectionObserver {
   private readonly onRequestFinished = (request: Request): void => {
     if (!this.requests.delete(request)) return;
     const now = this.markNetworkActivity();
-    if (this.requests.size === 0) {
-      this.network.completed = true;
-      this.network.streamActive = false;
-      this.network.completedAt = now;
-    }
+    this.updateNetworkCompletion(now);
   };
 
   private readonly onRequestFailed = (request: Request): void => {
     if (!this.requests.delete(request)) return;
-    this.markNetworkActivity();
-    this.network.failed = true;
-    this.network.streamActive = false;
-    this.network.failureText = request.failure()?.errorText || "request_failed";
+    this.recordNetworkFailure(request.failure()?.errorText || "request_failed");
   };
 
   private readonly onCdpRequest = (event: {
@@ -946,6 +981,9 @@ export class ChatGptSubmissionRejectionObserver {
     this.network.completed = false;
     this.network.failed = false;
     this.network.failureText = undefined;
+    this.network.abortedAfterResponse = false;
+    this.network.abortText = undefined;
+    this.network.completedAt = undefined;
   };
 
   private readonly onCdpResponse = (event: {
@@ -986,17 +1024,12 @@ export class ChatGptSubmissionRejectionObserver {
   private readonly onCdpFinished = (event: { requestId: string }): void => {
     if (!this.cdpRequestIds.delete(event.requestId)) return;
     const now = this.markNetworkActivity();
-    this.network.completed = this.cdpRequestIds.size === 0;
-    this.network.streamActive = this.cdpRequestIds.size > 0;
-    if (this.network.completed) this.network.completedAt = now;
+    this.updateNetworkCompletion(now);
   };
 
   private readonly onCdpFailed = (event: { requestId: string; errorText?: string }): void => {
     if (!this.cdpRequestIds.delete(event.requestId)) return;
-    this.markNetworkActivity();
-    this.network.failed = true;
-    this.network.streamActive = false;
-    this.network.failureText = event.errorText || "network_loading_failed";
+    this.recordNetworkFailure(event.errorText || "network_loading_failed");
   };
 
   async begin(page: Page): Promise<void> {
@@ -3393,7 +3426,9 @@ export class ChatGptBrowserWorker {
         && network.responseStatus >= 200
         && network.responseStatus < 400) {
         const completedAt = network.completedAt ?? network.lastActivityAt ?? Date.now();
-        const settleDeadline = completedAt + CHATGPT_NETWORK_DOM_SETTLE_MS;
+        const settleDeadline = completedAt + (network.abortedAfterResponse
+          ? CHATGPT_ABORTED_STREAM_DOM_SETTLE_MS
+          : CHATGPT_NETWORK_DOM_SETTLE_MS);
         if (Date.now() >= settleDeadline) {
           throw new ChatGptWebAdapterError(
             "ChatGPT completed the response stream, but its assistant turn was not available in the browser DOM.",
@@ -5667,7 +5702,9 @@ export class ChatGptBrowserWorker {
       let capturedResponse = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
-      const markdownBuffer = new ChatGptMarkdownBuffer();
+      const markdownBuffer = turn.compaction
+        ? new ChatGptMarkdownBuffer(markdown => markdown, 750, false)
+        : new ChatGptMarkdownBuffer();
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;

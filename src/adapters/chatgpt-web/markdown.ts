@@ -206,6 +206,7 @@ export class ChatGptMarkdownBuffer {
   constructor(
     private readonly transform: (markdown: string) => string = markdown => markdown,
     private readonly stabilityMs = 750,
+    private readonly streamDuringObservation = true,
   ) {
     if (!Number.isFinite(stabilityMs) || stabilityMs < 0) {
       throw new Error("ChatGPT Markdown stability window must be a non-negative finite number");
@@ -220,6 +221,13 @@ export class ChatGptMarkdownBuffer {
     }
     this.consistencyError = undefined;
     this.latest = reconciled.map(segment => ({ ...segment }));
+    if (!this.streamDuringObservation) {
+      // Compaction text is never exposed to Codex as message deltas. Keep only the newest
+      // renderer projection and serialize it once at completion, so harmless ChatGPT rewrites
+      // cannot be mistaken for an illegal retraction of client-visible output.
+      this.candidates.clear();
+      return "";
+    }
 
     const visibleCandidates = new Set<string>();
     for (const segment of reconciled) {

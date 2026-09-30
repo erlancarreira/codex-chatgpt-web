@@ -2939,6 +2939,50 @@ test("submission network observer tracks backend stream activity independently o
     failed: false,
   });
   expect(observer.networkIsLive(Date.now(), 1_000)).toBe(false);
+
+  session.emit("Network.requestWillBeSent", {
+    requestId: "request-aborted-after-response",
+    request: { method: "POST", url: "https://chatgpt.com/backend-api/f/conversation" },
+  });
+  session.emit("Network.responseReceived", {
+    requestId: "request-aborted-after-response",
+    response: { status: 200 },
+  });
+  session.emit("Network.dataReceived", {
+    requestId: "request-aborted-after-response",
+    dataLength: 256,
+    encodedDataLength: 256,
+    data: "",
+  });
+  session.emit("Network.loadingFailed", {
+    requestId: "request-aborted-after-response",
+    errorText: "net::ERR_ABORTED",
+    canceled: true,
+  });
+  expect(observer.networkSnapshot()).toMatchObject({
+    responseStatus: 200,
+    abortedAfterResponse: true,
+    abortText: "net::ERR_ABORTED",
+    completed: true,
+    failed: false,
+    streamActive: false,
+  });
+
+  session.emit("Network.requestWillBeSent", {
+    requestId: "request-real-failure",
+    request: { method: "POST", url: "https://chatgpt.com/backend-api/f/conversation" },
+  });
+  session.emit("Network.loadingFailed", {
+    requestId: "request-real-failure",
+    errorText: "net::ERR_CONNECTION_RESET",
+    canceled: false,
+  });
+  expect(observer.networkSnapshot()).toMatchObject({
+    completed: false,
+    failed: true,
+    failureText: "net::ERR_CONNECTION_RESET",
+    abortedAfterResponse: false,
+  });
   observer.dispose();
 });
 
