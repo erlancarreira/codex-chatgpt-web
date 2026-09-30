@@ -2940,6 +2940,11 @@ test("submission network observer tracks backend stream activity independently o
   });
   expect(observer.networkIsLive(Date.now(), 1_000)).toBe(false);
 
+  // Start a fresh observation epoch so the aborted request is itself the primary request.
+  // A later candidate must never overwrite the already-proven primary request in one epoch.
+  observer.dispose();
+  await observer.begin(page as unknown as Page);
+
   session.emit("Network.requestWillBeSent", {
     requestId: "request-aborted-after-response",
     request: { method: "POST", url: "https://chatgpt.com/backend-api/f/conversation" },
@@ -4183,8 +4188,9 @@ test("an accepted turn survives internal observation faults instead of being tor
   // Failing the turn on one loses an accepted ChatGPT turn that is never resent.
   expect(MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS).toBeGreaterThan(1);
   expect(worker).toContain("if (!(error instanceof TypeError) || observedThisIteration) throw error;");
-  expect(worker).toContain("internalObservationFaults = 0;");
-  expect(worker).toMatch(/internalObservationFaults > MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS/);
+  expect(worker).toContain("internalObservationBudget.reset();");
+  expect(worker).toContain("internalObservationBudget.consume(error)");
+  expect(worker).toContain("RecoveryBudgetExceededError");
 
   // Liveness may postpone a verdict but never waive it, so a tool call that never returns cannot
   // hold an undeadlined turn open forever.
