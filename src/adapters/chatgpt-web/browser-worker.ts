@@ -5797,9 +5797,10 @@ export class ChatGptBrowserWorker {
       let capturedResponse = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
-      const markdownBuffer = turn.compaction
+      const compactionProjection = turn.compaction
         ? new ChatGptCompactionProjection()
-        : new ChatGptMarkdownBuffer();
+        : undefined;
+      const markdownBuffer = compactionProjection ?? new ChatGptMarkdownBuffer();
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
@@ -5884,7 +5885,7 @@ export class ChatGptBrowserWorker {
               ),
             );
             if (rebound.identity !== responseTurn.identity) {
-              if (turn.compaction) markdownBuffer.remount();
+              compactionProjection?.remount();
               responseTurn = rebound;
               responseDomCache.key = undefined;
               responseDomCache.snapshot = undefined;
@@ -5910,7 +5911,7 @@ export class ChatGptBrowserWorker {
             );
             page = recovered.page;
             submissionBaseline = recovered.baseline;
-            if (turn.compaction) markdownBuffer.remount();
+            compactionProjection?.remount();
             responseTurn = {
               ...responseTurn,
               locator: page.locator(chatGptAssistantTurnSelector(responseTurn.identity)),
@@ -6144,7 +6145,7 @@ export class ChatGptBrowserWorker {
       return finalText;
     } catch (error) {
       if (turn.lifecycle) {
-        const phase = turn.lifecycle.snapshot().phase;
+        const phase = turn.lifecycle.phase();
         if (!["completed", "failed", "cancelled", "timed_out"].includes(phase)) {
           const reason = error instanceof Error ? error.message : String(error);
           if (error instanceof DOMException && error.name === "AbortError") {
