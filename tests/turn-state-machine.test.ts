@@ -61,6 +61,31 @@ test("benign and recoverable transport failures do not terminate a proven turn",
   expect(state.lastTransportFailure?.classification).toBe("benign");
 });
 
+test("recoverable failed primary may be replaced by a correlated retry request", () => {
+  let state = createTurnState();
+  state = apply(state, "runtime", { type: "prepare", at: 1 });
+  state = apply(state, "runtime", { type: "submission_sent", at: 2 });
+  state = apply(state, "transport", { type: "transport_accepted", at: 3, requestId: "r1", status: 200 });
+  state = apply(state, "transport", {
+    type: "transport_failed",
+    at: 4,
+    requestId: "r1",
+    classification: "recoverable",
+    reason: "net::ERR_CONNECTION_RESET",
+  });
+  state = apply(state, "transport", { type: "transport_accepted", at: 5, requestId: "r2", status: 200 });
+  expect(state).toMatchObject({
+    phase: "accepted",
+    primaryRequestId: "r2",
+    acceptedStatus: 200,
+    hasTransportData: false,
+    transportFinished: false,
+  });
+  state = apply(state, "transport", { type: "transport_data", at: 6, requestId: "r2", bytes: 32 });
+  expect(state.phase).toBe("streaming");
+});
+
+
 test("runtime failures are terminal from any active phase", () => {
   let state = createTurnState();
   state = apply(state, "runtime", { type: "prepare", at: 1 });
