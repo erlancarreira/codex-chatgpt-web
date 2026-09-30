@@ -167,7 +167,7 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
       return withSequence(state, input, { phase: "submitted" });
 
     case "transport_accepted": {
-      requirePhase(state, event, ["submitted", "accepted", "streaming"]);
+      requirePhase(state, event, ["submitted", "accepted", "streaming", "waiting_tool", "tool_running"]);
       assertRequestId(event.requestId);
       if (!Number.isSafeInteger(event.status) || event.status < 100 || event.status > 599) {
         throw new Error("Turn transport status must be a valid HTTP status");
@@ -189,8 +189,11 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
           `Turn already owns primary request ${state.primaryRequestId}; received ${event.requestId}`,
         );
       }
+      const phase = state.phase === "waiting_tool" || state.phase === "tool_running"
+        ? state.phase
+        : "accepted";
       return withSequence(state, input, {
-        phase: "accepted",
+        phase,
         primaryRequestId: event.requestId,
         acceptedStatus: event.status,
         ...(canReplaceRecoverablePrimary ? {
