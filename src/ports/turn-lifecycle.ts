@@ -6,6 +6,10 @@ import type {
 
 export interface TurnLifecycleSink {
   dispatch(source: SequencedTurnEvent["source"], event: TurnEvent): Promise<TurnState>;
+  phase(): TurnState["phase"];
+}
+
+export interface TurnLifecycleInspector extends TurnLifecycleSink {
   snapshot(): TurnState;
 }
 
