@@ -155,11 +155,11 @@ Acceptance:
 
 ## Phase 11 — observability
 
-- [ ] Emit structured trace events with traceId/turnId/requestId/source/sequence/timestamp.
-- [ ] Keep sensitive values redacted.
-- [ ] Add final state + causal terminal event to diagnostics.
-- [ ] Make event history sufficient to reconstruct a failed turn.
-- [ ] Avoid duplicate CDP/Playwright accounting.
+- [x] Emit structured trace events with traceId/turnId/requestId/source/sequence/timestamp.
+- [x] Keep sensitive values redacted.
+- [x] Add final state + causal terminal event to diagnostics.
+- [x] Make event history sufficient to reconstruct a failed turn.
+- [x] Avoid duplicate CDP/Playwright accounting.
 
 ## Phase 12 — fault injection and regression coverage
 
@@ -205,3 +205,4 @@ Acceptance:
 - 2026-09-30 — Phase 7 completed: structured compaction now has its own application coordinator/state journal; provisional Markdown is never streamed, remount resets only provisional compaction projection, and existing retained-compaction retry/cancel coverage plus new remount tests lock the behavior.
 - 2026-09-30 — Phase 8 completed: MCP execution is behind a ToolRuntimePort, per-turn tool transitions are centralized, same-batch reconnect is idempotent, foreign/late tool events fail closed, and existing Codex approval/sandbox behavior remains in the broker boundary.
 - 2026-09-30 — Phase 9 completed: automatic Web turns and browser workers now have explicit supervisors; Runtime/Tunnel ownership remains unchanged; lifecycle timing uses named deadline/settle/watchdog policies and supervisor tests prove turn isolation.
+- 2026-09-30 — Phase 11 completed: daemon and launcher-helper lifecycles expose bounded structured traces with trace/turn/request identity, monotonic sequence, source and timestamp; terminal causes are redacted; CDP-primary/Playwright-fallback transport prevents duplicate accounting.
