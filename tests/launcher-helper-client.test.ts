@@ -7,6 +7,7 @@ import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "../src
 import { LauncherBrowserHelperClient } from "../src/adapters/chatgpt-web/launcher-helper-client";
 import type { BrowserTurn, ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
 import { LAUNCHER_BROWSER_HOST_KIND, LAUNCHER_BROWSER_IDLE_URL } from "../src/launcher-browser-host";
+import { WebTurnLifecycleCoordinator } from "../src/application/web-turn-lifecycle-coordinator";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -31,6 +32,12 @@ test("daemon streams browser lifecycle through the real helper process", async (
         await turn.onMultipartStageAcknowledged?.(index);
       }
       await turn.onSendActivated();
+      await turn.lifecycle?.dispatch("transport", {
+        type: "transport_accepted", at: 10, requestId: "helper-network-1", status: 200,
+      });
+      await turn.lifecycle?.dispatch("transport", {
+        type: "transport_data", at: 11, requestId: "helper-network-1", bytes: 64,
+      });
       turn.onSubmitted();
       turn.onReasoningSummary("Reading project");
       turn.onReasoningSummary(" files", true);
@@ -46,6 +53,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
           pending: [],
         },
       });
+      await turn.lifecycle?.dispatch("runtime", { type: "complete", at: 12 });
       return "done";
     };
     await import(${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-helper-main.ts", import.meta.url).href)});
@@ -89,6 +97,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
   let sendActivated = false;
   let submitted = false;
   let released = false;
+  const lifecycle = new WebTurnLifecycleCoordinator({ now: () => 1 });
   const client = new LauncherBrowserHelperClient(config);
   try {
     const result = await client.run({
@@ -106,7 +115,11 @@ test("daemon streams browser lifecycle through the real helper process", async (
         release: () => { released = true; },
       }),
       onMultipartStageAcknowledged: stage => { acknowledgedStages.push(stage); },
-      onSendActivated: () => { sendActivated = true; },
+      lifecycle,
+      onSendActivated: async () => {
+        sendActivated = true;
+        await lifecycle.submissionSent(2);
+      },
       onSubmitted: () => { submitted = true; },
       onReasoningSummary: (text, continuation) => reasoning.push({ text, continuation: continuation === true }),
       onTextDelta: text => deltas.push(text),
@@ -134,6 +147,14 @@ test("daemon streams browser lifecycle through the real helper process", async (
       },
     }]);
     expect(released).toBe(true);
+    expect(lifecycle.snapshot().phase).toBe("completed");
+    expect(lifecycle.events().map(item => item.event.type)).toEqual([
+      "prepare",
+      "submission_sent",
+      "transport_accepted",
+      "transport_data",
+      "complete",
+    ]);
   } finally {
     await client.close();
   }
