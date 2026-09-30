@@ -34,6 +34,7 @@ export type TurnEvent =
   | { type: "tool_completed"; at: number; callId: string }
   | { type: "tool_failed"; at: number; callId: string; reason: string }
   | { type: "complete"; at: number }
+  | { type: "fail"; at: number; reason: string }
   | { type: "cancel"; at: number; reason?: string }
   | { type: "deadline_exceeded"; at: number; deadline: number };
 
@@ -228,6 +229,13 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
           event.reason,
         );
       }
+      if (event.classification === "benign") {
+        return withSequence(state, input, {
+          lastTransportFailure: failure,
+          transportFinished: true,
+          phase: state.activeToolCalls.length > 0 ? state.phase : "finalizing",
+        });
+      }
       return withSequence(state, input, { lastTransportFailure: failure });
     }
 
@@ -297,6 +305,10 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
     case "complete":
       requirePhase(state, event, ["finalizing"]);
       return terminalState(state, input, "completed");
+
+    case "fail":
+      if (!event.reason.trim()) throw new Error("Turn failure requires a reason");
+      return terminalState(state, input, "failed", event.reason);
 
     case "cancel":
       return terminalState(state, input, "cancelled", event.reason);
