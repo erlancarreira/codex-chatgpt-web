@@ -303,7 +303,10 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
       return terminalState(state, input, "failed", event.reason);
 
     case "complete":
-      requirePhase(state, event, ["finalizing"]);
+      requirePhase(state, event, ["accepted", "streaming", "finalizing"]);
+      if (state.activeToolCalls.length > 0) {
+        throw new InvalidTurnTransitionError(state.phase, event.type, "Turn cannot complete with active tool calls");
+      }
       return terminalState(state, input, "completed");
 
     case "fail":
