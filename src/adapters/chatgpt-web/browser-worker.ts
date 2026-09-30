@@ -864,8 +864,7 @@ export class ChatGptSubmissionRejectionObserver {
   private recordTransport(observation: TransportObservation): void {
     if (!this.transport.record(observation) || !this.lifecycle) return;
     const lifecycle = this.lifecycle;
-    const lifecycleState = lifecycle.snapshot();
-    if (["completed", "failed", "cancelled", "timed_out"].includes(lifecycleState.phase)) return;
+    if (["completed", "failed", "cancelled", "timed_out"].includes(lifecycle.phase())) return;
 
     const snapshot = this.transport.networkSnapshot();
     if (snapshot.primaryRequestId !== observation.requestId) return;
