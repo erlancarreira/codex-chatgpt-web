@@ -107,6 +107,7 @@ import {
   ChatGptWebTransportTracker,
   type ChatGptWebTransportSnapshot,
 } from "./transport-tracker";
+import { decideMissingAssistant } from "./turn-lifecycle-policy";
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
@@ -3403,63 +3404,61 @@ export class ChatGptBrowserWorker {
       if (state.visibleStopButtonCount > 0) {
         responseDeadline = Math.min(deadline ?? Number.POSITIVE_INFINITY, Date.now() + graceMs);
       }
+      const now = Date.now();
       const network = networkProgress?.networkSnapshot();
-      if (network?.failed) {
-        throw new ChatGptWebAdapterError(
-          `ChatGPT conversation transport failed before the assistant response became available${network.failureText ? `: ${network.failureText}` : ""}`,
-          { status: 502, errorType: "server_error", code: "browser_stream_failed", retryable: true },
-        );
-      }
-      if (network?.completed
-        && network.responseSeen
-        && network.responseStatus !== undefined
-        && network.responseStatus >= 200
-        && network.responseStatus < 400) {
-        const completedAt = network.completedAt ?? network.lastActivityAt ?? Date.now();
-        const settleDeadline = completedAt + (network.abortedAfterResponse
-          ? CHATGPT_ABORTED_STREAM_DOM_SETTLE_MS
-          : CHATGPT_NETWORK_DOM_SETTLE_MS);
-        if (Date.now() >= settleDeadline) {
-          throw new ChatGptWebAdapterError(
-            "ChatGPT completed the response stream, but its assistant turn was not available in the browser DOM.",
-            { status: 502, errorType: "server_error", code: "browser_response_dom_missing", retryable: true },
-          );
-        }
-        responseDeadline = Math.min(responseDeadline, settleDeadline);
-      }
-      // A delayed renderer wake can cross the grace while the assistant appears. Only a fresh
-      // observation can prove it is still missing; the explicit turn deadline remains above.
-      if (Date.now() >= responseDeadline
-        && !chatGptExternalProgressSuppressesDomHealth(progress, Date.now())) {
-        if (networkProgress?.networkIsLive(Date.now(), graceMs)) {
-          await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
-          continue;
-        }
-        if (network?.cdpAttached && network.requestSeen && !network.completed) {
-          throw new ChatGptWebAdapterError(
-            "ChatGPT response stream stopped producing network data before an assistant turn became available.",
-            { status: 504, errorType: "server_error", code: "browser_stream_stalled", retryable: true },
-          );
-        }
+      const externalProgressLive = chatGptExternalProgressSuppressesDomHealth(progress, now);
+      const networkLive = networkProgress?.networkIsLive(now, graceMs) ?? false;
+      const recoverMissingAssistant = async (): Promise<boolean> => {
         const missingTurn = new Error("ChatGPT accepted the message but did not expose its assistant turn in the DOM");
-        if (recoverObservation && missingTurnRecoveryAttempts < MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
-          missingTurnRecoveryAttempts += 1;
-          const recovered = await recoverObservation(
-            missingTurnRecoveryAttempts,
-            missingTurn,
-            observationBaseline,
-            signal,
+        if (!recoverObservation || missingTurnRecoveryAttempts >= MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
+          throw missingTurn;
+        }
+        missingTurnRecoveryAttempts += 1;
+        const recovered = await recoverObservation(
+          missingTurnRecoveryAttempts,
+          missingTurn,
+          observationBaseline,
+          signal,
+        );
+        observationPage = recovered.page;
+        observationBaseline = recovered.baseline;
+        responseDeadline = Math.min(
+          deadline ?? Number.POSITIVE_INFINITY,
+          Date.now() + graceMs,
+        );
+        return true;
+      };
+
+      if (network) {
+        const decision = decideMissingAssistant({
+          now,
+          responseDeadline,
+          network,
+          networkLive,
+          externalProgressLive,
+          networkDomSettleMs: CHATGPT_NETWORK_DOM_SETTLE_MS,
+          abortedStreamDomSettleMs: CHATGPT_ABORTED_STREAM_DOM_SETTLE_MS,
+        });
+        if (decision.kind === "fail") {
+          throw new ChatGptWebAdapterError(
+            decision.message,
+            {
+              status: decision.status,
+              errorType: "server_error",
+              code: decision.code,
+              retryable: decision.retryable,
+            },
           );
-          observationPage = recovered.page;
-          observationBaseline = recovered.baseline;
-          responseDeadline = Math.min(
-            deadline ?? Number.POSITIVE_INFINITY,
-            Date.now() + graceMs,
-          );
+        }
+        if (decision.kind === "recover") {
+          await recoverMissingAssistant();
           continue;
         }
-        throw missingTurn;
+      } else if (now >= responseDeadline && !externalProgressLive) {
+        await recoverMissingAssistant();
+        continue;
       }
+
       await this.waitForTurnDomOrExternalProgress(
         observationPage,
         progress?.revision ?? 0,
