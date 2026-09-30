@@ -163,8 +163,15 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
       return withSequence(state, input, { phase: "preparing" });
 
     case "submission_sent":
-      requirePhase(state, event, ["preparing"]);
-      return withSequence(state, input, { phase: "submitted" });
+      // Submission evidence is monotonic and may arrive after stronger evidence from another
+      // producer (for example an MCP tool request that raced ahead of the browser acknowledgement).
+      // Never regress an already-advanced turn merely to record a late send boundary.
+      requirePhase(state, event, [
+        "preparing", "submitted", "accepted", "streaming", "waiting_tool", "tool_running", "finalizing",
+      ]);
+      return withSequence(state, input, {
+        phase: state.phase === "preparing" ? "submitted" : state.phase,
+      });
 
     case "transport_accepted": {
       requirePhase(state, event, ["submitted", "accepted", "streaming", "waiting_tool", "tool_running"]);
@@ -274,7 +281,7 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
       // submission. It may race ahead of CDP responseReceived, so "submitted" is a valid
       // entry point. A later transport_accepted event fills request identity/status without
       // disturbing the active tool phase.
-      requirePhase(state, event, ["submitted", "accepted", "streaming"]);
+      requirePhase(state, event, ["preparing", "submitted", "accepted", "streaming"]);
       const callIds = uniqueIds(event.callIds);
       if (callIds.length === 0) throw new Error("Tool request event requires at least one call");
       if (state.activeToolCalls.length > 0) {
