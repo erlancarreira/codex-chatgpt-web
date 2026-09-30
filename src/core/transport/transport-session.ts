@@ -111,23 +111,23 @@ export class AssistantTransportCorrelationPolicy implements TransportCorrelation
     currentPrimaryRequestId?: string,
   ): string | undefined {
     const current = currentPrimaryRequestId ? requests[currentPrimaryRequestId] : undefined;
-    if (current && current.role === "candidate") {
-      const classification = current.lifecycle === "failed" ? classifyTransportFailure(current) : undefined;
-      if (requestHasAuthoritativeProgress(current) || classification === "benign" || current.lifecycle === "finished") {
-        return current.requestId;
-      }
-      if (acceptedStatus(current.responseStatus) && classification !== "terminal") return current.requestId;
+    if (
+      current
+      && current.role === "candidate"
+      && current.lifecycle !== "finished"
+      && current.lifecycle !== "failed"
+      && (acceptedStatus(current.responseStatus) || requestHasAuthoritativeProgress(current))
+    ) {
+      // An active accepted primary is sticky. A concurrent matching request cannot steal authority
+      // until the current request reaches a terminal transport state.
+      return current.requestId;
     }
 
     const candidates = Object.values(requests).filter(request => request.role === "candidate");
     if (candidates.length === 0) return undefined;
 
     const score = (request: TransportRequestState): number => {
-      if (requestHasAuthoritativeProgress(request)) {
-        if (request.lifecycle === "finished") return 60;
-        if (request.lifecycle === "failed" && classifyTransportFailure(request) === "benign") return 55;
-        return 50;
-      }
+      if (requestHasAuthoritativeProgress(request)) return 50;
       if (acceptedStatus(request.responseStatus)) return request.lifecycle === "failed" ? 20 : 40;
       if (request.lifecycle === "failed") return 0;
       return 10;
@@ -136,7 +136,7 @@ export class AssistantTransportCorrelationPolicy implements TransportCorrelation
     candidates.sort((left, right) => {
       const scoreDifference = score(right) - score(left);
       if (scoreDifference !== 0) return scoreDifference;
-      if (left.sentAt !== right.sentAt) return left.sentAt - right.sentAt;
+      if (left.sentAt !== right.sentAt) return right.sentAt - left.sentAt;
       return left.requestId.localeCompare(right.requestId);
     });
     return candidates[0]?.requestId;
