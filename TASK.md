@@ -180,17 +180,17 @@ Acceptance:
 
 ## Phase 13 — validation and cleanup
 
-- [ ] Typecheck.
-- [ ] Focused unit tests.
-- [ ] Browser contract tests.
-- [ ] Compaction tests.
-- [ ] MCP/tunnel relevant tests.
-- [ ] Full test suite where the available CI runner supports it.
-- [ ] Build.
-- [ ] Diff/format check.
-- [ ] Review for polling/sleep/unbounded-loop regressions.
-- [ ] Update architecture documentation.
-- [ ] Update this task file to 100% complete.
+- [x] Typecheck.
+- [x] Focused unit tests.
+- [x] Browser contract tests.
+- [x] Compaction tests.
+- [x] MCP/tunnel relevant tests.
+- [x] Full test suite where the available CI runner supports it.
+- [x] Build.
+- [x] Diff/format check.
+- [x] Review for polling/sleep/unbounded-loop regressions.
+- [x] Update architecture documentation.
+- [x] Update this task file to 100% complete.
 - [ ] Mark PR ready.
 - [ ] Merge only after validation evidence is attached to the PR.
 
@@ -216,3 +216,6 @@ Acceptance:
 
 - 2026-09-30 — First Woodpecker PR run reached browser-contracts: 159 tests passed and 2 real-helper integration tests exceeded Bun's default 5s test timeout in CI. Production timeouts were unchanged; only those subprocess integration tests received an explicit 15s test budget.
 - 2026-09-30 — Full-tests proved 891 Bun tests with 0 failures; launcher node:test failed because the Bun ARM64 image provides a Node compatibility shim. The launcher node:test suite moved to a real Node 22 runner without weakening assertions.
+
+- 2026-09-30 — Localized README parity was corrected without weakening the contract: all localized READMEs now match the CodexNative Web README's 10 command fences and 7 link targets, with no stale project references.
+- 2026-09-30 — Phase 13 code validation green on head a8f15c9 in both Woodpecker push and PR pipelines: contracts/typecheck, event-core, helper IPC, browser contracts, full Bun suite, real-Node launcher suite, and build all succeeded. git diff --check is clean; architecture audit found no new operational polling/arbitrary sleep control path or direct private ChatGPT backend calls. TASK finalization commit intentionally leaves only PR-ready/merge checkboxes open until those actions occur.
