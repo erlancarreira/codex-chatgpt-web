@@ -45,13 +45,13 @@ https://github.com/erlancarreira/codex-chatgpt-web/releases
 
 Se ainda não houver um artefato binário publicado para a versão desejada, use a instalação por código-fonte.
 
-<!-- source install requires Bun 1.4.0. -->
+<!-- source install requires Bun 1.4.2. -->
 
 <!-- version-sync:
-  /releases/download/v6.1.3/codex-web-gpt-6.1.3-win-x64.exe
-  /releases/download/v6.1.3/codex-web-gpt-6.1.3-mac-arm64.dmg
-  /releases/download/v6.1.3/codex-web-gpt-6.1.3-mac-x64.dmg
-  /releases/download/v6.1.3/codex-web-gpt-6.1.3-linux-x64.AppImage
+  /releases/download/v6.2.0/codex-web-gpt-6.2.0-win-x64.exe
+  /releases/download/v6.2.0/codex-web-gpt-6.2.0-mac-arm64.dmg
+  /releases/download/v6.2.0/codex-web-gpt-6.2.0-mac-x64.dmg
+  /releases/download/v6.2.0/codex-web-gpt-6.2.0-linux-x64.AppImage
 -->
 
 ## Instalação por código-fonte
@@ -59,7 +59,7 @@ Se ainda não houver um artefato binário publicado para a versão desejada, use
 Requisitos:
 
 - Git;
-- Bun **1.4.0**;
+- Bun **1.4.2**;
 - Codex instalado;
 - uma conta ChatGPT válida.
 

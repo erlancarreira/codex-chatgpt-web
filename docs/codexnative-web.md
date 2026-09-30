@@ -79,7 +79,7 @@ bun install --frozen-lockfile
 bun run app
 ```
 
-Requisito para desenvolvimento: Bun **1.4.0**.
+Requisito para desenvolvimento: Bun **1.4.2**.
 
 ## 4. Setup inicial
 

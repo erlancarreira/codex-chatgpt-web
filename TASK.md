@@ -221,3 +221,21 @@ Acceptance:
 - 2026-09-30 — Phase 13 code validation green. Current PR HEAD 3a7c905 has both Woodpecker push and PR statuses green; final validation evidence was attached to PR #1. PR is ready for review; merge remains the only outstanding task.
 
 - 2026-09-30 — PR #1 merged into `main` after the current HEAD passed both Woodpecker push and PR gates. Task plan closed at 100%.
+
+
+## Phase 14 — first installable CodexNative Web release
+
+- [x] Confirm event-driven architecture is merged into `main`.
+- [x] Disable GitHub Actions workflows; Woodpecker remains the CI gate.
+- [x] Bump synchronized product/runtime/launcher version to `6.2.0`.
+- [ ] Wait for Woodpecker validation on the version commit.
+- [ ] Build and smoke-test the Windows x64 launcher from a clean GitHub source snapshot.
+- [ ] Assemble checksummed release assets and release notes.
+- [ ] Publish GitHub release `v6.2.0`.
+- [ ] Update the current Windows installation to `6.2.0`.
+- [ ] Verify launcher/runtime health and a real Web turn after update.
+- [ ] Confirm installation instructions for a second Windows user.
+
+### Release execution log
+
+- 2026-09-30 — Release preparation started. Repository had no previous published GitHub releases; v6.2.0 will be the first installable CodexNative Web release.

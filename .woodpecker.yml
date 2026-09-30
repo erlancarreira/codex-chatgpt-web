@@ -1,12 +1,12 @@
 steps:
   install:
-    image: oven/bun:1.4.0
+    image: oven/bun:1.4.2
     commands:
       - bun install --frozen-lockfile
       - cd launcher && bun install --frozen-lockfile
 
   contracts:
-    image: oven/bun:1.4.0
+    image: oven/bun:1.4.2
     depends_on:
       - install
     commands:
@@ -15,7 +15,7 @@ steps:
       - bun run launcher:typecheck
 
   event-core:
-    image: oven/bun:1.4.0
+    image: oven/bun:1.4.2
     depends_on:
       - contracts
     commands:
@@ -40,14 +40,14 @@ steps:
         tests/turn-lifecycle-protocol.test.ts
 
   helper-ipc-contracts:
-    image: oven/bun:1.4.0
+    image: oven/bun:1.4.2
     depends_on:
       - event-core
     commands:
       - bun test tests/launcher-helper-client.test.ts
 
   browser-contracts:
-    image: oven/bun:1.4.0
+    image: oven/bun:1.4.2
     depends_on:
       - helper-ipc-contracts
     commands:
@@ -57,7 +57,7 @@ steps:
         tests/browser-response-dom.test.ts
 
   full-tests:
-    image: oven/bun:1.4.0
+    image: oven/bun:1.4.2
     depends_on:
       - browser-contracts
     commands:
@@ -72,7 +72,7 @@ steps:
       - node --test tests/*.test.cjs
 
   build:
-    image: oven/bun:1.4.0
+    image: oven/bun:1.4.2
     depends_on:
       - launcher-tests
     commands:

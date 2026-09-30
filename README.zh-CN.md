@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/erlancarreira/codex-chatgpt-web/mai
 
 ## 从源代码运行
 
-需要 Bun 1.4.0。
+需要 Bun 1.4.2。
 
 ```bash
 git clone https://github.com/erlancarreira/codex-chatgpt-web.git
@@ -86,7 +86,7 @@ curl -fsSL https://raw.githubusercontent.com/erlancarreira/codex-chatgpt-web/mai
 
 ## 开发
 
-需要 Bun 1.4.0。
+需要 Bun 1.4.2。
 
 ```bash
 git clone https://github.com/erlancarreira/codex-chatgpt-web.git
@@ -106,10 +106,10 @@ bun run app
 
 <!--
 Version sync:
-  /releases/download/v6.1.3/codex-web-gpt-6.1.3-win-x64.exe
-  /releases/download/v6.1.3/codex-web-gpt-6.1.3-mac-arm64.dmg
-  /releases/download/v6.1.3/codex-web-gpt-6.1.3-mac-x64.dmg
-  /releases/download/v6.1.3/codex-web-gpt-6.1.3-linux-x64.AppImage
+  /releases/download/v6.2.0/codex-web-gpt-6.2.0-win-x64.exe
+  /releases/download/v6.2.0/codex-web-gpt-6.2.0-mac-arm64.dmg
+  /releases/download/v6.2.0/codex-web-gpt-6.2.0-mac-x64.dmg
+  /releases/download/v6.2.0/codex-web-gpt-6.2.0-linux-x64.AppImage
 -->
 
 ## 文档
