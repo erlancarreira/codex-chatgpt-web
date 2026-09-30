@@ -167,12 +167,21 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
       return withSequence(state, input, { phase: "submitted" });
 
     case "transport_accepted": {
-      requirePhase(state, event, ["submitted", "accepted", "streaming", "waiting_tool", "tool_running"]);
+      requirePhase(state, event, ["submitted", "accepted", "streaming"]);
       assertRequestId(event.requestId);
       if (!Number.isSafeInteger(event.status) || event.status < 100 || event.status > 599) {
         throw new Error("Turn transport status must be a valid HTTP status");
       }
-      if (state.primaryRequestId && state.primaryRequestId !== event.requestId) {
+      const replacingPrimary = Boolean(
+        state.primaryRequestId
+        && state.primaryRequestId !== event.requestId,
+      );
+      const canReplaceRecoverablePrimary = replacingPrimary
+        && state.lastTransportFailure?.requestId === state.primaryRequestId
+        && state.lastTransportFailure.classification === "recoverable"
+        && state.activeToolCalls.length === 0
+        && !state.transportFinished;
+      if (replacingPrimary && !canReplaceRecoverablePrimary) {
         throw new InvalidTurnTransitionError(
           state.phase,
           event.type,
@@ -180,13 +189,13 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
         );
       }
       return withSequence(state, input, {
-        phase: state.phase === "waiting_tool" || state.phase === "tool_running"
-          ? state.phase
-          : state.phase === "streaming"
-            ? "streaming"
-            : "accepted",
+        phase: "accepted",
         primaryRequestId: event.requestId,
         acceptedStatus: event.status,
+        ...(canReplaceRecoverablePrimary ? {
+          hasTransportData: false,
+          transportFinished: false,
+        } : {}),
       });
     }
 
