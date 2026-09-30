@@ -590,8 +590,6 @@ export function createChatGptWebAdapter(
               });
             }
           }
-          tokenSettled = true;
-          token.resolve(activeToken);
           if (!parsed._compactionRequest) {
             trace.push({
               kind: "commentary",
@@ -611,6 +609,15 @@ export function createChatGptWebAdapter(
           });
           await broker.confirmSafeTurnSent(activeToken, surfaceNonce);
           submission.phase = "accepted";
+          // The capability must exist before the manual prompt is compiled so ChatGPT can claim it,
+          // but the Responses observer must not enter the MCP tool loop until the launcher has
+          // causally confirmed that the prompt was sent. Publishing the token earlier lets our own
+          // cleanup revoke it while waitSent is failing, which can mask the launcher failure as an
+          // unrelated "token invalid" broker error.
+          if (!tokenSettled) {
+            tokenSettled = true;
+            token.resolve(activeToken);
+          }
           if (!parsed._compactionRequest) trace.push({
             kind: "commentary",
             text: "> **Waiting for ChatGPT**\n>\n> The prompt is marked `Sent`. Waiting for the selected ChatGPT plugin to connect.",
