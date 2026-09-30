@@ -113,12 +113,12 @@ Historical scenarios:
 
 ## Phase 7 — compaction engine isolation
 
-- [ ] Separate compaction session lifecycle from normal assistant streaming.
-- [ ] Keep provisional renderer projections internal.
-- [ ] Serialize one final checkpoint after completion fence.
-- [ ] Integrate retained-compaction handoff through domain events.
-- [ ] Remove dependence on normal streaming consistency rules for provisional compaction text.
-- [ ] Add rewrite/remount/cancel/retry tests.
+- [x] Separate compaction session lifecycle from normal assistant streaming.
+- [x] Keep provisional renderer projections internal.
+- [x] Serialize one final checkpoint after completion fence.
+- [x] Integrate retained-compaction handoff through domain events.
+- [x] Remove dependence on normal streaming consistency rules for provisional compaction text.
+- [x] Add rewrite/remount/cancel/retry tests.
 
 Acceptance:
 - Provisional renderer rewrites cannot produce client-visible retraction errors.
@@ -202,3 +202,4 @@ Acceptance:
 - 2026-09-30 — Main response observation path converted from fixed 250 ms polling to DOM/MCP/network event wakes with a named watchdog only. Missing-assistant/stream-failure/stall decisions centralized in a pure lifecycle policy.
 - 2026-09-30 — Phase 5 completed: MutationObserver-backed DOM snapshots now flow through a typed lifecycle adapter with monotonic revisions; surface loss/remount are non-terminal observations and network-active turns remain alive.
 - 2026-09-30 — Phase 6 completed: browser observation/rebind retries now use named bounded Core recovery budgets; historical failure semantics are locked in a dedicated regression suite.
+- 2026-09-30 — Phase 7 completed: structured compaction now has its own application coordinator/state journal; provisional Markdown is never streamed, remount resets only provisional compaction projection, and existing retained-compaction retry/cancel coverage plus new remount tests lock the behavior.
