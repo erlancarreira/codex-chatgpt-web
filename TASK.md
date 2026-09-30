@@ -210,3 +210,5 @@ Acceptance:
 - 2026-09-30 — Phase 10 integration review completed: automatic Browser-only and Full Harness use the actor-owned lifecycle end-to-end, launcher-helper lifecycle events round-trip to the daemon actor, Zero Risk stays outside automatic browser lifecycle, and diagnostics preserve structured lifecycle snapshots.
 - 2026-09-30 — Phase 12 fault-injection matrix completed in tests. Additional hardening fixed recoverable primary-request takeover and prevented DOM coalescing from crossing critical mailbox event boundaries.
 - 2026-09-30 — Woodpecker repository enabled by the owner; CI validation gate is now active for Phase 13.
+
+- 2026-09-30 — Woodpecker repository enabled by owner; branch push used to trigger the first CI validation for this refactor.
