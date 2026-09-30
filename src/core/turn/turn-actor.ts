@@ -117,11 +117,11 @@ export class TurnActor {
   }
 
   private findPendingCoalescible(): MailboxItem | undefined {
-    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
-      const item = this.queue[index]!;
-      if (isCoalescible(item.event)) return item;
-    }
-    return undefined;
+    // Coalescing may collapse only the contiguous replaceable tail. Searching past a critical
+    // event would move a later DOM revision ahead of network/tool/terminal evidence and violate
+    // mailbox arrival order.
+    const tail = this.queue.at(-1);
+    return tail && isCoalescible(tail.event) ? tail : undefined;
   }
 
   private evictOneCoalescible(): void {
