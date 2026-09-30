@@ -1534,6 +1534,7 @@ test.each([false, true])("fresh multipart compaction preserves phase budgets wit
     expect(turn.traceId.endsWith(freshConversation ? "_fresh" : "_fallback")).toBeTrue();
     expect(turn.onMultipartStageAcknowledged).toBeDefined();
     expect(turn.onSubmitted).toBeDefined();
+    expect(turn.onResponseProgress).toBeDefined();
     for (let part = 1; part <= 5; part++) {
       mock.timers.tick(25);
       expect(turn.abortSignal?.aborted).toBeFalse();
@@ -1542,6 +1543,11 @@ test.each([false, true])("fresh multipart compaction preserves phase budgets wit
     mock.timers.tick(25);
     expect(turn.abortSignal?.aborted).toBeFalse();
     turn.onSubmitted!();
+    for (let progress = 0; progress < 5; progress += 1) {
+      mock.timers.tick(25);
+      expect(turn.abortSignal?.aborted).toBeFalse();
+      turn.onResponseProgress!();
+    }
     mock.timers.tick(25);
     expect(turn.abortSignal?.aborted).toBeFalse();
     return "Fallback checkpoint after separately bounded phases";

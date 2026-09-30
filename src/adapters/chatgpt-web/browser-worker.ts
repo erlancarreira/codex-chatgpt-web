@@ -850,6 +850,7 @@ const chatGptTerminalErrorAlert = (scope: ChatGptTextScope): Locator => scope
 export type ChatGptSubmissionNetworkSnapshot = ChatGptWebTransportSnapshot;
 
 export class ChatGptSubmissionRejectionObserver {
+  constructor(private readonly onProgress?: () => void) {}
   private page?: Page;
   private context?: BrowserContext;
   private cdp?: CDPSession;
@@ -866,7 +867,9 @@ export class ChatGptSubmissionRejectionObserver {
   private readonly lifecycleDataPublished = new Set<string>();
 
   private recordTransport(observation: TransportObservation): void {
-    if (!this.transport.record(observation) || !this.lifecycle) return;
+    if (!this.transport.record(observation)) return;
+    this.onProgress?.();
+    if (!this.lifecycle) return;
     const lifecycle = this.lifecycle;
     if (["completed", "failed", "cancelled", "timed_out"].includes(lifecycle.phase())) return;
 
@@ -1593,6 +1596,8 @@ export interface BrowserTurn {
   onHeartbeat?: () => void;
   /** Single-writer lifecycle sink for automatic Web turns. */
   lifecycle?: TurnLifecycleSink;
+  /** Proven response transport progress used to re-arm higher-level inactivity watchdogs. */
+  onResponseProgress?: () => void;
   /** Send activation is the ambiguity boundary after which a fresh surface must not replay this prompt. */
   onSendActivated?: () => void | Promise<void>;
   /** Semantic submission evidence proved that ChatGPT accepted the prompt. */
@@ -5238,7 +5243,7 @@ export class ChatGptBrowserWorker {
     let managedPage: Page | undefined;
     let diagnosticPage: Page | undefined;
     const usageWrites: Promise<void>[] = [];
-    const submissionRejection = new ChatGptSubmissionRejectionObserver();
+    const submissionRejection = new ChatGptSubmissionRejectionObserver(turn.onResponseProgress);
     try {
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       // Validate only the selected physical message, not canonical history used for usage estimates.

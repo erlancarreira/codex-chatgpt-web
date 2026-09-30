@@ -722,6 +722,7 @@ export function createChatGptWebAdapter(
         ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
         capabilities: turnCapabilities,
         ...(lifecycle ? { lifecycle } : {}),
+        ...(hooks.onCompactionProgress ? { onResponseProgress: hooks.onCompactionProgress } : {}),
         prepare: async () => ({
           ...compileChatGptWebPrompt(
             checkpointInput.parsed,
@@ -735,9 +736,18 @@ export function createChatGptWebAdapter(
         ...(parsed._compactionRequest ? { compaction: true } : {}),
         ...submissionLifecycle,
         ...multipartProgressLifecycle,
-        onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
-        onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
-        onTextDelta: delta => text.push(delta),
+        onReasoningSummary: (text, continuation) => {
+          hooks.onCompactionProgress?.();
+          trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) });
+        },
+        onCommentary: (text, continuation) => {
+          hooks.onCompactionProgress?.();
+          trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) });
+        },
+        onTextDelta: delta => {
+          hooks.onCompactionProgress?.();
+          text.push(delta);
+        },
         ...(captureLunaCheckpoint ? {
           captureLunaCheckpoint: true,
           onLunaCheckpoint: captureCheckpoint,
@@ -796,6 +806,7 @@ export function createChatGptWebAdapter(
       ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
       capabilities: turnCapabilities,
       ...(lifecycle ? { lifecycle } : {}),
+      ...(hooks.onCompactionProgress ? { onResponseProgress: hooks.onCompactionProgress } : {}),
       prepare: () => prepareWith(checkpointInput.parsed),
       ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
@@ -803,9 +814,18 @@ export function createChatGptWebAdapter(
       ...(parsed._compactionRequest ? { compaction: true } : {}),
       ...submissionLifecycle,
       ...multipartProgressLifecycle,
-      onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
-      onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
-      onTextDelta: delta => text.push(delta),
+      onReasoningSummary: (text, continuation) => {
+        hooks.onCompactionProgress?.();
+        trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) });
+      },
+      onCommentary: (text, continuation) => {
+        hooks.onCompactionProgress?.();
+        trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) });
+      },
+      onTextDelta: delta => {
+        hooks.onCompactionProgress?.();
+        text.push(delta);
+      },
       externalProgress,
       completionFence: {
         begin: async () => broker.beginCompletionFence(await token.promise),

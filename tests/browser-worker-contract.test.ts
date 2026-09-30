@@ -2902,7 +2902,8 @@ test("submission network observer tracks backend stream activity independently o
     mainFrame: () => frame,
     context: () => ({ newCDPSession: async () => session }),
   });
-  const observer = new ChatGptSubmissionRejectionObserver();
+  let responseProgress = 0;
+  const observer = new ChatGptSubmissionRejectionObserver(() => { responseProgress += 1; });
   await observer.begin(page as unknown as Page);
   expect(observer.networkSnapshot()).toMatchObject({ cdpAttached: true, requestSeen: false });
 
@@ -2931,6 +2932,7 @@ test("submission network observer tracks backend stream activity independently o
     dataBytes: 128,
   });
   expect(observer.networkIsLive(Date.now(), 1_000)).toBe(true);
+  expect(responseProgress).toBe(3);
 
   session.emit("Network.loadingFinished", { requestId: "request-1", encodedDataLength: 128 });
   expect(observer.networkSnapshot()).toMatchObject({
@@ -2939,6 +2941,7 @@ test("submission network observer tracks backend stream activity independently o
     failed: false,
   });
   expect(observer.networkIsLive(Date.now(), 1_000)).toBe(false);
+  expect(responseProgress).toBe(4);
 
   // Start a fresh observation epoch so the aborted request is itself the primary request.
   // A later candidate must never overwrite the already-proven primary request in one epoch.
