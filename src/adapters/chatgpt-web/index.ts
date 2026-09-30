@@ -49,6 +49,7 @@ import {
   chatGptConversationKey,
   retainedConversationResumeRequest,
 } from "./conversation-key";
+import { WebTurnLifecycleCoordinator } from "../../application/web-turn-lifecycle-coordinator";
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
@@ -418,6 +419,7 @@ export function createChatGptWebAdapter(
           : "The Zero Risk Web model route requires ChatGPT Zero Risk interaction mode",
       );
     }
+    const lifecycle = manualRequest ? undefined : new WebTurnLifecycleCoordinator();
     const mode = manualRequest
       ? { localTools: true }
       : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
@@ -507,12 +509,13 @@ export function createChatGptWebAdapter(
       );
     };
     const submission: NonNullable<ChatGptTurnRuntime["submission"]> = { phase: "prepared" };
-    // A canonical compaction request is side-effect free and remains safe to rebuild after an
-    // ambiguous browser send. Normal task prompts must never be replayed after Send activation.
+    // Replay safety and technical lifecycle are separate concerns. Canonical compaction may still
+    // rebuild after an ambiguous send, but its physical Web turn is recorded by the coordinator.
     const submissionLifecycle = {
-      ...(!parsed._compactionRequest ? {
-        onSendActivated: () => { submission.phase = "send_activated" as const; },
-      } : {}),
+      onSendActivated: async () => {
+        if (!parsed._compactionRequest) submission.phase = "send_activated";
+        await lifecycle?.submissionSent();
+      },
       onSubmitted: () => {
         if (!parsed._compactionRequest) submission.phase = "accepted";
         hooks.onCompactionProgress?.();
@@ -693,6 +696,7 @@ export function createChatGptWebAdapter(
         reasoning: parsed.options.reasoning,
         ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
         capabilities: turnCapabilities,
+        ...(lifecycle ? { lifecycle } : {}),
         prepare: async () => ({
           ...compileChatGptWebPrompt(
             checkpointInput.parsed,
@@ -722,6 +726,7 @@ export function createChatGptWebAdapter(
         text,
         usageInput: checkpointInput.parsed,
         submission,
+        ...(lifecycle ? { lifecycle } : {}),
         cancel: browserTurn.cancel,
       };
     }
@@ -764,6 +769,7 @@ export function createChatGptWebAdapter(
       reasoning: parsed.options.reasoning,
       ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
       capabilities: turnCapabilities,
+      ...(lifecycle ? { lifecycle } : {}),
       prepare: () => prepareWith(checkpointInput.parsed),
       ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
@@ -805,6 +811,7 @@ export function createChatGptWebAdapter(
         if (activeToken) await broker.revoke(activeToken);
       },
       submission,
+      ...(lifecycle ? { lifecycle } : {}),
       cancel: (reason?: Error) => {
         browserTurn.cancel(reason);
         if (activeToken) {
