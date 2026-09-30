@@ -5,8 +5,8 @@ import type {
   TurnState,
 } from "../core/turn/turn-state-machine";
 import type {
+  TurnLifecycleInspector,
   TurnLifecycleJournalReader,
-  TurnLifecycleSink,
 } from "../ports/turn-lifecycle";
 
 export interface WebTurnLifecycleCoordinatorOptions {
@@ -21,7 +21,7 @@ export interface WebTurnLifecycleCoordinatorOptions {
  * Adapters publish immutable events through this coordinator. The enclosed TurnActor is the
  * single writer; the journal is bounded and diagnostic-only.
  */
-export class WebTurnLifecycleCoordinator implements TurnLifecycleSink, TurnLifecycleJournalReader {
+export class WebTurnLifecycleCoordinator implements TurnLifecycleInspector, TurnLifecycleJournalReader {
   private readonly actor: TurnActor;
   private readonly journal: SequencedTurnEvent[] = [];
   private readonly maxJournalEvents: number;
@@ -53,6 +53,10 @@ export class WebTurnLifecycleCoordinator implements TurnLifecycleSink, TurnLifec
 
   snapshot(): TurnState {
     return this.actor.snapshot();
+  }
+
+  phase(): TurnState["phase"] {
+    return this.actor.snapshot().phase;
   }
 
   events(): readonly SequencedTurnEvent[] {
