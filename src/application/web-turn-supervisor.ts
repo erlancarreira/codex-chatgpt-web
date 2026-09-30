@@ -1,4 +1,4 @@
-import { WebTurnLifecycleCoordinator } from "./web-turn-lifecycle-coordinator";
+import { WebTurnLifecycleCoordinator, type WebTurnLifecycleCoordinatorOptions } from "./web-turn-lifecycle-coordinator";
 
 export interface WebTurnSupervisorOptions {
   maxActiveTurns?: number;
@@ -15,7 +15,7 @@ export class WebTurnSupervisor {
     }
   }
 
-  acquire(turnId: string): WebTurnLifecycleCoordinator {
+  acquire(turnId: string, options: WebTurnLifecycleCoordinatorOptions = {}): WebTurnLifecycleCoordinator {
     const id = turnId.trim();
     if (!id) throw new Error("Turn supervisor requires a non-empty turn id");
     const existing = this.turns.get(id);
@@ -26,7 +26,7 @@ export class WebTurnSupervisor {
     if (this.activeCount() >= this.maxActiveTurns) {
       throw new Error(`Turn supervisor is at capacity (${this.maxActiveTurns})`);
     }
-    const lifecycle = new WebTurnLifecycleCoordinator();
+    const lifecycle = new WebTurnLifecycleCoordinator(options);
     this.turns.set(id, lifecycle);
     return lifecycle;
   }
