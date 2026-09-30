@@ -104,6 +104,8 @@ import type {
   ChatGptExternalTurnProgressSnapshot,
   ChatGptTurnProgressReader,
 } from "./turn-progress";
+import type { TurnLifecycleSink } from "../../ports/turn-lifecycle";
+import type { TransportObservation } from "../../core/transport/transport-session";
 import {
   ChatGptWebTransportTracker,
   type ChatGptWebTransportSnapshot,
@@ -855,6 +857,79 @@ export class ChatGptSubmissionRejectionObserver {
   private playwrightRequestSequence = 0;
   private checks: Array<Promise<ChatGptWebAdapterError | undefined>> = [];
   private readonly transport = new ChatGptWebTransportTracker();
+  private lifecycle?: TurnLifecycleSink;
+  private lifecycleFailure?: ChatGptWebAdapterError;
+  private readonly lifecycleDispatches = new Set<Promise<void>>();
+
+  private recordTransport(observation: TransportObservation): void {
+    if (!this.transport.record(observation) || !this.lifecycle) return;
+    const lifecycle = this.lifecycle;
+    const lifecycleState = lifecycle.snapshot();
+    if (["completed", "failed", "cancelled", "timed_out"].includes(lifecycleState.phase)) return;
+
+    const snapshot = this.transport.networkSnapshot();
+    if (snapshot.primaryRequestId !== observation.requestId) return;
+
+    let event:
+      | Parameters<TurnLifecycleSink["dispatch"]>[1]
+      | undefined;
+    if (observation.type === "response_received"
+      && observation.status >= 200
+      && observation.status < 400) {
+      event = {
+        type: "transport_accepted",
+        at: observation.at,
+        requestId: observation.requestId,
+        status: observation.status,
+      };
+    } else if (observation.type === "data_received"
+      && snapshot.responseStatus !== undefined
+      && snapshot.responseStatus >= 200
+      && snapshot.responseStatus < 400) {
+      event = {
+        type: "transport_data",
+        at: observation.at,
+        requestId: observation.requestId,
+        bytes: observation.bytes,
+      };
+    } else if (observation.type === "request_finished"
+      && snapshot.responseStatus !== undefined
+      && snapshot.responseStatus >= 200
+      && snapshot.responseStatus < 400) {
+      event = {
+        type: "transport_finished",
+        at: observation.at,
+        requestId: observation.requestId,
+      };
+    } else if (observation.type === "request_failed") {
+      event = {
+        type: "transport_failed",
+        at: observation.at,
+        requestId: observation.requestId,
+        classification: snapshot.abortedAfterResponse ? "benign" : "recoverable",
+        reason: observation.errorText,
+      };
+    }
+    if (!event) return;
+
+    const pending = lifecycle.dispatch("transport", event)
+      .then(() => undefined)
+      .catch(error => {
+        this.lifecycleFailure = new ChatGptWebAdapterError(
+          `ChatGPT turn lifecycle rejected a transport event: ${error instanceof Error ? error.message : String(error)}`,
+          {
+            status: 502,
+            errorType: "server_error",
+            code: "turn_state_inconsistent",
+            retryable: false,
+          },
+        );
+      })
+      .finally(() => {
+        this.lifecycleDispatches.delete(pending);
+      });
+    this.lifecycleDispatches.add(pending);
+  }
 
   private playwrightRequestId(request: Request): string {
     const existing = this.playwrightRequestIds.get(request);
@@ -870,7 +945,7 @@ export class ChatGptSubmissionRejectionObserver {
     const serviceWorker = typeof request.serviceWorker === "function" ? request.serviceWorker() : null;
     if (!serviceWorker && request.frame() !== this.page.mainFrame()) return;
     this.requests.add(request);
-    this.transport.record({
+    this.recordTransport({
       type: "request_sent",
       source: "playwright",
       requestId: this.playwrightRequestId(request),
@@ -884,7 +959,7 @@ export class ChatGptSubmissionRejectionObserver {
   private readonly onResponse = (response: Response): void => {
     if (!this.requests.has(response.request())) return;
     const status = response.status();
-    this.transport.record({
+    this.recordTransport({
       type: "response_received",
       source: "playwright",
       requestId: this.playwrightRequestId(response.request()),
@@ -904,7 +979,7 @@ export class ChatGptSubmissionRejectionObserver {
 
   private readonly onRequestFinished = (request: Request): void => {
     if (!this.requests.delete(request)) return;
-    this.transport.record({
+    this.recordTransport({
       type: "request_finished",
       source: "playwright",
       requestId: this.playwrightRequestId(request),
@@ -914,7 +989,7 @@ export class ChatGptSubmissionRejectionObserver {
 
   private readonly onRequestFailed = (request: Request): void => {
     if (!this.requests.delete(request)) return;
-    this.transport.record({
+    this.recordTransport({
       type: "request_failed",
       source: "playwright",
       requestId: this.playwrightRequestId(request),
@@ -930,7 +1005,7 @@ export class ChatGptSubmissionRejectionObserver {
     if (event.request.method !== "POST"
       || !isChatGptConversationSubmissionUrl(event.request.url)) return;
     this.cdpRequestIds.add(event.requestId);
-    this.transport.record({
+    this.recordTransport({
       type: "request_sent",
       source: "cdp",
       requestId: event.requestId,
@@ -946,7 +1021,7 @@ export class ChatGptSubmissionRejectionObserver {
     response: { status: number };
   }): void => {
     if (!this.cdpRequestIds.has(event.requestId)) return;
-    this.transport.record({
+    this.recordTransport({
       type: "response_received",
       source: "cdp",
       requestId: event.requestId,
@@ -960,7 +1035,7 @@ export class ChatGptSubmissionRejectionObserver {
         if (!this.cdpRequestIds.has(event.requestId) || !bufferedData) return;
         const bytes = Buffer.from(bufferedData, "base64").length;
         if (bytes <= 0) return;
-        this.transport.record({
+        this.recordTransport({
           type: "data_received",
           source: "cdp",
           requestId: event.requestId,
@@ -981,7 +1056,7 @@ export class ChatGptSubmissionRejectionObserver {
     if (!this.cdpRequestIds.has(event.requestId)) return;
     const bytes = Math.max(0, event.dataLength);
     if (bytes <= 0) return;
-    this.transport.record({
+    this.recordTransport({
       type: "data_received",
       source: "cdp",
       requestId: event.requestId,
@@ -992,7 +1067,7 @@ export class ChatGptSubmissionRejectionObserver {
 
   private readonly onCdpFinished = (event: { requestId: string }): void => {
     if (!this.cdpRequestIds.delete(event.requestId)) return;
-    this.transport.record({
+    this.recordTransport({
       type: "request_finished",
       source: "cdp",
       requestId: event.requestId,
@@ -1002,7 +1077,7 @@ export class ChatGptSubmissionRejectionObserver {
 
   private readonly onCdpFailed = (event: { requestId: string; errorText?: string }): void => {
     if (!this.cdpRequestIds.delete(event.requestId)) return;
-    this.transport.record({
+    this.recordTransport({
       type: "request_failed",
       source: "cdp",
       requestId: event.requestId,
@@ -1011,10 +1086,12 @@ export class ChatGptSubmissionRejectionObserver {
     });
   };
 
-  async begin(page: Page): Promise<void> {
+  async begin(page: Page, lifecycle?: TurnLifecycleSink): Promise<void> {
     this.dispose();
     this.checks = [];
     this.transport.reset();
+    this.lifecycle = lifecycle;
+    this.lifecycleFailure = undefined;
     this.page = page;
     const context = typeof page.context === "function" ? page.context() : undefined;
     if (context && typeof context.on === "function") {
@@ -1054,6 +1131,8 @@ export class ChatGptSubmissionRejectionObserver {
   }
 
   async failure(): Promise<ChatGptWebAdapterError | undefined> {
+    await Promise.all([...this.lifecycleDispatches]);
+    if (this.lifecycleFailure) return this.lifecycleFailure;
     return (await Promise.all(this.checks)).find(error => error !== undefined);
   }
 
@@ -1091,6 +1170,7 @@ export class ChatGptSubmissionRejectionObserver {
     }
     this.context = undefined;
     this.page = undefined;
+    this.lifecycle = undefined;
     this.requests.clear();
     this.cdpRequestIds.clear();
     const cdp = this.cdp;
@@ -5659,7 +5739,7 @@ export class ChatGptBrowserWorker {
             return turn.onSubmitted?.();
           }, onSendActivated: async () => {
             await this.assertSelectedEffort(page, mode);
-            await submissionRejection.begin(page);
+            await submissionRejection.begin(page, turn.lifecycle);
             await turn.onSendActivated?.();
           } },
           completionTracker,
@@ -5729,6 +5809,8 @@ export class ChatGptBrowserWorker {
       let internalObservationFaults = 0;
       let observedThisIteration = false;
       let completionFenceRevision: number | undefined;
+      let lifecycleDomRevision = 0;
+      let lifecycleDomKey: string | undefined;
       for (;;) {
         // The heartbeat is a consumer callback, so it stays outside the observation-fault region:
         // a defect in the caller must not be retried as though the page could not be read.
@@ -5810,6 +5892,15 @@ export class ChatGptBrowserWorker {
             await diagnostics.capture(page, "response-page-rebound");
             continue;
           }
+        }
+        if (turn.lifecycle && responseDomCache.key && lifecycleDomKey !== responseDomCache.key) {
+          lifecycleDomKey = responseDomCache.key;
+          lifecycleDomRevision += 1;
+          await turn.lifecycle.dispatch("dom", {
+            type: "dom_revision",
+            at: Date.now(),
+            revision: lifecycleDomRevision,
+          });
         }
         if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
         if (snapshot.responsePresent) consecutiveObservationRebinds = 0;
@@ -5944,6 +6035,7 @@ export class ChatGptBrowserWorker {
             } else {
               finalText = final.markdown;
             }
+            await turn.lifecycle?.dispatch("runtime", { type: "complete", at: Date.now() });
             break;
           }
           if (!loggedCompletionWait && Date.now() - sentAt >= 60_000) {
@@ -6016,6 +6108,17 @@ export class ChatGptBrowserWorker {
       );
       return finalText;
     } catch (error) {
+      if (turn.lifecycle) {
+        const phase = turn.lifecycle.snapshot().phase;
+        if (!["completed", "failed", "cancelled", "timed_out"].includes(phase)) {
+          const reason = error instanceof Error ? error.message : String(error);
+          if (error instanceof DOMException && error.name === "AbortError") {
+            await turn.lifecycle.dispatch("client", { type: "cancel", at: Date.now(), reason }).catch(() => {});
+          } else {
+            await turn.lifecycle.dispatch("runtime", { type: "fail", at: Date.now(), reason }).catch(() => {});
+          }
+        }
+      }
       if (!(error instanceof DOMException && error.name === "AbortError")
         && !(error instanceof ChatGptWebAdapterError && error.code === "client_cancelled")) {
         error = await submissionRejection.failure() ?? error;
