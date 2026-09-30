@@ -10,6 +10,10 @@ import { createBrowserHelperPromptSelection } from "./browser-helper-prompt-sele
 import { isChatGptWebMultipartPartCount, type CompiledChatGptWebPrompt } from "./prompt";
 import { ChatGptMirroredTurnProgress } from "./turn-progress";
 import type { ChatGptExternalTurnProgressSnapshot } from "./turn-progress";
+import { parseTurnLifecycleState } from "./turn-lifecycle-protocol";
+import type { TurnLifecycleSink, TurnLifecycleTraceRecord } from "../../ports/turn-lifecycle";
+import { createTurnState, type SequencedTurnEvent, type TurnEvent, type TurnState } from "../../core/turn/turn-state-machine";
+import { redactTurnDiagnosticText } from "../../core/observability/redaction";
 
 interface RunMessage {
   type: "run";
@@ -24,6 +28,7 @@ interface RunMessage {
   };
   turn: {
     traceId: string;
+    turnId?: string;
     modelId: string;
     reasoning?: string;
     modelFamily?: "5.6" | "6";
@@ -36,6 +41,7 @@ interface RunMessage {
     compaction?: boolean;
     captureLunaCheckpoint?: boolean;
     externalProgress?: boolean;
+    lifecycle?: boolean;
   };
 }
 
@@ -74,6 +80,7 @@ type InputMessage = RunMessage
   | { type: "send_activation_ack"; id: string }
   | { type: "completion_fence_begin_ack"; id: string; requestId: number; revision: number | null }
   | { type: "completion_fence_commit_ack"; id: string; requestId: number; committed: boolean }
+  | { type: "lifecycle_ack"; id: string; requestId: number; state: TurnState }
   | { type: "progress"; id: string; snapshot: ChatGptExternalTurnProgressSnapshot }
   | { type: "abort"; id: string; reason?: "compaction_handoff_accepted" }
   | { type: "shutdown" };
@@ -113,7 +120,13 @@ const completionFenceCommitWaiters = new Map<string, {
   resolve: (committed: boolean) => void;
   reject: (error: Error) => void;
 }>();
+const lifecycleWaiters = new Map<string, {
+  requestId: number;
+  resolve: (state: TurnState) => void;
+  reject: (error: Error) => void;
+}>();
 let completionFenceRequestId = 0;
+let lifecycleRequestId = 0;
 let shuttingDown = false;
 let shutdownPromise: Promise<void> | undefined;
 
@@ -141,6 +154,10 @@ function requestShutdown(): Promise<void> {
     waiter.reject(new DOMException("Browser helper is shutting down", "AbortError"));
   }
   completionFenceCommitWaiters.clear();
+  for (const waiter of lifecycleWaiters.values()) {
+    waiter.reject(new DOMException("Browser helper is shutting down", "AbortError"));
+  }
+  lifecycleWaiters.clear();
   input.close();
   void closeChatGptBrowserWorkers().then(
     () => {
@@ -161,6 +178,10 @@ async function run(message: RunMessage): Promise<void> {
     throw new Error("Browser helper turn identity is invalid");
   }
   if (abortControllers.has(message.id)) throw new Error(`Browser helper turn already exists: ${message.id}`);
+  if (message.turn.turnId !== undefined
+    && (typeof message.turn.turnId !== "string" || !message.turn.turnId.trim() || message.turn.turnId.length > 256)) {
+    throw new Error("Browser helper native turn id is invalid");
+  }
   if (message.turn.resumeAvailable !== undefined && typeof message.turn.resumeAvailable !== "boolean") {
     throw new Error("Browser helper resume availability is invalid");
   }
@@ -185,6 +206,9 @@ async function run(message: RunMessage): Promise<void> {
   }
   if (message.turn.externalProgress !== undefined && typeof message.turn.externalProgress !== "boolean") {
     throw new Error("Browser helper external progress flag is invalid");
+  }
+  if (message.turn.lifecycle !== undefined && typeof message.turn.lifecycle !== "boolean") {
+    throw new Error("Browser helper lifecycle flag is invalid");
   }
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -216,12 +240,81 @@ async function run(message: RunMessage): Promise<void> {
   const promptSelection = createBrowserHelperPromptSelection();
   preparedSelections.set(message.id, promptSelection);
   const prepareSelected = async () => ({ ...await promptSelection.wait(), release: () => {} });
+  let lifecycleState: TurnState = createTurnState();
+  const lifecycleTrace: TurnLifecycleTraceRecord[] = [];
+  const lifecycle: TurnLifecycleSink | undefined = message.turn.lifecycle
+    ? {
+      phase: () => lifecycleState.phase,
+      diagnosticSnapshot: () => {
+        const terminal = lifecycleState.terminal
+          ? {
+            ...lifecycleState.terminal,
+            ...(lifecycleState.terminal.reason
+              ? { reason: redactTurnDiagnosticText(lifecycleState.terminal.reason) }
+              : {}),
+          }
+          : undefined;
+        const lastTransportFailure = lifecycleState.lastTransportFailure
+          ? {
+            ...lifecycleState.lastTransportFailure,
+            reason: redactTurnDiagnosticText(lifecycleState.lastTransportFailure.reason),
+          }
+          : undefined;
+        return {
+          state: {
+            ...lifecycleState,
+            activeToolCalls: [...lifecycleState.activeToolCalls],
+            startedToolCalls: [...lifecycleState.startedToolCalls],
+            ...(terminal ? { terminal } : {}),
+            ...(lastTransportFailure ? { lastTransportFailure } : {}),
+          },
+          ...(terminal ? { terminal } : {}),
+          events: lifecycleTrace.map(entry => ({ ...entry })),
+        };
+      },
+      dispatch: (source: SequencedTurnEvent["source"], event: TurnEvent) => new Promise<TurnState>((resolve, reject) => {
+        lifecycleRequestId += 1;
+        const requestId = lifecycleRequestId;
+        const key = `${message.id}:${requestId}`;
+        lifecycleWaiters.set(key, { requestId, resolve, reject });
+        if (!writeProtocol({
+          type: "event",
+          id: message.id,
+          event: "lifecycle",
+          requestId,
+          source,
+          payload: event,
+        })) {
+          lifecycleWaiters.delete(key);
+          reject(new Error("Browser helper could not publish a turn lifecycle event"));
+        }
+      }).then(state => {
+        lifecycleState = state;
+        const requestId = "requestId" in event && typeof event.requestId === "string"
+          ? event.requestId
+          : undefined;
+        lifecycleTrace.push({
+          traceId: message.turn.traceId,
+          ...(message.turn.turnId ? { turnId: message.turn.turnId } : {}),
+          ...(requestId ? { requestId } : {}),
+          source,
+          sequence: state.sequence,
+          timestamp: event.at,
+          type: event.type,
+        });
+        if (lifecycleTrace.length > 512) lifecycleTrace.splice(0, lifecycleTrace.length - 512);
+        return state;
+      }),
+    }
+    : undefined;
   const turn: BrowserTurn = {
     traceId: message.turn.traceId,
+    ...(message.turn.turnId ? { turnId: message.turn.turnId } : {}),
     modelId: message.turn.modelId,
     reasoning: message.turn.reasoning,
     ...(message.turn.modelFamily ? { modelFamily: message.turn.modelFamily } : {}),
     capabilities: message.turn.capabilities,
+    ...(lifecycle ? { lifecycle } : {}),
     ...(message.turn.nativeConnector ? { nativeConnector: true } : {}),
     prepare: prepareSelected,
     ...(message.turn.resumeAvailable ? { prepareResume: prepareSelected } : {}),
@@ -338,6 +431,11 @@ async function run(message: RunMessage): Promise<void> {
     commitWaiter?.reject(new DOMException("Browser helper turn ended before completion-fence commit", "AbortError"));
     abortControllers.delete(message.id);
     turnProgress.delete(message.id);
+    for (const [key, waiter] of lifecycleWaiters) {
+      if (!key.startsWith(`${message.id}:`)) continue;
+      lifecycleWaiters.delete(key);
+      waiter.reject(new DOMException("Browser helper turn ended before lifecycle acknowledgement", "AbortError"));
+    }
   }
 }
 
@@ -464,6 +562,29 @@ input.on("line", line => {
     if (!waiter || waiter.requestId !== message.requestId) return;
     completionFenceCommitWaiters.delete(message.id);
     waiter.resolve(message.committed);
+  } else if (message.type === "lifecycle_ack") {
+    if (!Number.isSafeInteger(message.requestId) || message.requestId <= 0) {
+      writeProtocol({ type: "error", id: message.id, message: "Browser helper lifecycle acknowledgement id is invalid" });
+      abortControllers.get(message.id)?.abort();
+      return;
+    }
+    let state: TurnState;
+    try {
+      state = parseTurnLifecycleState(message.state);
+    } catch (error) {
+      writeProtocol({
+        type: "error",
+        id: message.id,
+        message: `Browser helper lifecycle acknowledgement is invalid: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      abortControllers.get(message.id)?.abort();
+      return;
+    }
+    const key = `${message.id}:${message.requestId}`;
+    const waiter = lifecycleWaiters.get(key);
+    if (!waiter || waiter.requestId !== message.requestId) return;
+    lifecycleWaiters.delete(key);
+    waiter.resolve(state);
   } else if (message.type === "progress") {
     // Progress is meaningful only for a turn this helper is currently running. Ignore every other
     // id so the mirror map remains owned by active turn lifecycles.
@@ -535,4 +656,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments", "turn-lifecycle-events"] });

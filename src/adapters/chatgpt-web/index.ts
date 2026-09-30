@@ -49,6 +49,9 @@ import {
   chatGptConversationKey,
   retainedConversationResumeRequest,
 } from "./conversation-key";
+import { WebTurnSupervisor } from "../../application/web-turn-supervisor";
+import { WebTurnToolLifecycle } from "../../application/web-turn-tool-lifecycle";
+import { ChatGptBrokerToolRuntime } from "./broker-tool-runtime";
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
@@ -344,6 +347,7 @@ export function createChatGptWebAdapter(
   } = {},
 ): ProviderAdapter {
   const worker = ChatGptBrowserWorker.forProvider(provider);
+  const turnSupervisor = new WebTurnSupervisor();
   const broker = dependencies.broker ?? TurnBroker.forSocket(brokerSocketPath(provider));
   const zeroRiskManualControl = dependencies.zeroRiskManualControl ?? launcherZeroRiskManualControl;
   const structuredBroker = broker instanceof TurnBroker ? broker : undefined;
@@ -418,10 +422,14 @@ export function createChatGptWebAdapter(
           : "The Zero Risk Web model route requires ChatGPT Zero Risk interaction mode",
       );
     }
+    const identity = extractChatGptTurnIdentity(parsed);
+    const lifecycle = manualRequest ? undefined : turnSupervisor.acquire(traceId, {
+      traceId,
+      ...(identity.turnId ? { turnId: identity.turnId } : {}),
+    });
     const mode = manualRequest
       ? { localTools: true }
       : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
-    const identity = extractChatGptTurnIdentity(parsed);
     const captureLunaCheckpoint = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
       && !parsed._compactionRequest
       && Boolean(identity.threadId && identity.turnId);
@@ -481,6 +489,7 @@ export function createChatGptWebAdapter(
     let browserOwnerSettled = false;
     const trackBrowserOwner = (browser: Promise<string>): Promise<string> => browser.finally(() => {
       browserOwnerSettled = true;
+      if (lifecycle) turnSupervisor.release(traceId, lifecycle);
     });
     const trace = new ChatGptTraceFeed();
     const text = new ChatGptTextFeed();
@@ -507,15 +516,26 @@ export function createChatGptWebAdapter(
       );
     };
     const submission: NonNullable<ChatGptTurnRuntime["submission"]> = { phase: "prepared" };
-    // A canonical compaction request is side-effect free and remains safe to rebuild after an
-    // ambiguous browser send. Normal task prompts must never be replayed after Send activation.
+    // Replay safety and technical lifecycle are separate concerns. Canonical compaction may still
+    // rebuild after an ambiguous send, but its physical Web turn is recorded by the coordinator.
     const submissionLifecycle = {
-      ...(!parsed._compactionRequest ? {
-        onSendActivated: () => { submission.phase = "send_activated" as const; },
-      } : {}),
+      onSendActivated: async () => {
+        if (!parsed._compactionRequest) submission.phase = "send_activated";
+        await lifecycle?.submissionSent();
+      },
       onSubmitted: () => {
         if (!parsed._compactionRequest) submission.phase = "accepted";
+        // Compaction liveness belongs to the browser submission boundary itself. Rearm it
+        // synchronously before any lifecycle acknowledgement can yield; test and real helpers are
+        // allowed to treat onSubmitted as a fire-and-forget notification.
         hooks.onCompactionProgress?.();
+        // Browser/CDP remains the transport authority, but an injected/legacy worker can
+        // report accepted submission without having called onSendActivated first. Ensure the
+        // lifecycle reaches "submitted" so a proven current-turn MCP request can take over as
+        // acceptance evidence instead of deadlocking the tool boundary.
+        if (lifecycle && (lifecycle.phase() === "created" || lifecycle.phase() === "preparing")) {
+          return lifecycle.submissionSent().then(() => undefined);
+        }
       },
     };
     const multipartProgressLifecycle = hooks.onCompactionProgress
@@ -570,8 +590,6 @@ export function createChatGptWebAdapter(
               });
             }
           }
-          tokenSettled = true;
-          token.resolve(activeToken);
           if (!parsed._compactionRequest) {
             trace.push({
               kind: "commentary",
@@ -591,6 +609,15 @@ export function createChatGptWebAdapter(
           });
           await broker.confirmSafeTurnSent(activeToken, surfaceNonce);
           submission.phase = "accepted";
+          // The capability must exist before the manual prompt is compiled so ChatGPT can claim it,
+          // but the Responses observer must not enter the MCP tool loop until the launcher has
+          // causally confirmed that the prompt was sent. Publishing the token earlier lets our own
+          // cleanup revoke it while waitSent is failing, which can mask the launcher failure as an
+          // unrelated "token invalid" broker error.
+          if (!tokenSettled) {
+            tokenSettled = true;
+            token.resolve(activeToken);
+          }
           if (!parsed._compactionRequest) trace.push({
             kind: "commentary",
             text: "> **Waiting for ChatGPT**\n>\n> The prompt is marked `Sent`. Waiting for the selected ChatGPT plugin to connect.",
@@ -689,10 +716,12 @@ export function createChatGptWebAdapter(
     if (!mode.localTools) {
       const browserTurn = cancellableBrowserTurn(finalizeCheckpoint(worker.run({
         traceId,
+        ...(identity.turnId ? { turnId: identity.turnId } : {}),
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
         ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
         capabilities: turnCapabilities,
+        ...(lifecycle ? { lifecycle } : {}),
         prepare: async () => ({
           ...compileChatGptWebPrompt(
             checkpointInput.parsed,
@@ -722,6 +751,7 @@ export function createChatGptWebAdapter(
         text,
         usageInput: checkpointInput.parsed,
         submission,
+        ...(lifecycle ? { lifecycle } : {}),
         cancel: browserTurn.cancel,
       };
     }
@@ -760,10 +790,12 @@ export function createChatGptWebAdapter(
     };
     const browserTurn = cancellableBrowserTurn(trackBrowserOwner(finalizeCheckpoint(worker.run({
       traceId,
+      ...(identity.turnId ? { turnId: identity.turnId } : {}),
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
       ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
       capabilities: turnCapabilities,
+      ...(lifecycle ? { lifecycle } : {}),
       prepare: () => prepareWith(checkpointInput.parsed),
       ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
@@ -805,6 +837,7 @@ export function createChatGptWebAdapter(
         if (activeToken) await broker.revoke(activeToken);
       },
       submission,
+      ...(lifecycle ? { lifecycle } : {}),
       cancel: (reason?: Error) => {
         browserTurn.cancel(reason);
         if (activeToken) {
@@ -1237,8 +1270,11 @@ export function createChatGptWebAdapter(
             }
 
             let turnToken: string | undefined;
+            let toolRuntime: ChatGptBrokerToolRuntime | undefined;
+            const toolLifecycle = new WebTurnToolLifecycle(session.runtime.lifecycle);
             if (session.runtime.mode === "tools") {
               turnToken = await withAbort(session.runtime.token, incoming.abortSignal);
+              toolRuntime = new ChatGptBrokerToolRuntime(broker, async () => turnToken!);
               if (!environment) throw new Error("Tool-capable ChatGPT web runtime lost its trusted environment");
               await broker.updateEnvironment(turnToken, environment);
 
@@ -1260,9 +1296,16 @@ export function createChatGptWebAdapter(
                   throw new Error(`Codex returned ${results.length} of ${outstanding.length} results for a parallel ChatGPT tool batch`);
                 }
                 for (const message of results) {
-                  await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
-                  session.runtime.externalProgress.recordToolResult();
-                  session.markResultDelivered(message.toolCallId);
+                  try {
+                    await toolRuntime!.complete(message.toolCallId, brokerResult(message));
+                    session.runtime.externalProgress.recordToolResult();
+                    await toolLifecycle.completed(message.toolCallId);
+                    session.markResultDelivered(message.toolCallId);
+                  } catch (error) {
+                    const reason = error instanceof Error ? error.message : String(error);
+                    await toolLifecycle.failed(message.toolCallId, reason).catch(() => {});
+                    throw error;
+                  }
                 }
               }
             } else if (session.outstanding().length > 0) {
@@ -1288,12 +1331,13 @@ export function createChatGptWebAdapter(
               const externalProgress = session.runtime.mode === "tools"
                 ? session.runtime.externalProgress
                 : undefined;
-              const armNextTools = () => turnToken
-                ? broker.nextToolBatch(turnToken, toolWaitAbort.signal).then(async requests => {
+              const armNextTools = () => toolRuntime
+                ? toolRuntime.nextBatch(toolWaitAbort.signal).then(async requests => {
                   if (!externalProgress) {
                     throw new Error("ChatGPT broker returned tools for a read-only browser turn");
                   }
                   if (requests.length > 0) {
+                    await toolLifecycle.requestBatch(requests.map(request => request.callId));
                     const revision = externalProgress.recordToolBatch(requests.length);
                     if (!session.runtime.manualControl) {
                       // The browser outcome is in the same race below and owns the semantic DOM and
@@ -1323,7 +1367,7 @@ export function createChatGptWebAdapter(
                 emitNewText(session.runtime.text.drain());
                 session.setFinalReasoning(roundReasoning);
                 session.setFinalEvents(session.roundEvents(roundKey));
-                if (turnToken) await broker.revoke(turnToken);
+                if (toolRuntime) await toolRuntime.revoke();
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
                   throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
@@ -1389,6 +1433,9 @@ export function createChatGptWebAdapter(
                   return;
                 }
                 validateBatchTools(parsed, next.requests);
+                for (const request of next.requests) {
+                  await toolLifecycle.started(request.callId);
+                }
                 session.setOutstanding(next.requests, roundReasoning, session.roundEvents(roundKey));
                 emitRoundBatch(buffer => emitToolBatch(
                   next.requests,
