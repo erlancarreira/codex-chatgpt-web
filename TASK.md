@@ -144,14 +144,14 @@ Acceptance:
 
 ## Phase 10 — integration into existing adapter
 
-- [ ] Wire new Core into ChatGPT Web adapter incrementally.
-- [ ] Preserve public Responses behavior.
-- [ ] Preserve Browser-only.
-- [ ] Preserve Full Harness.
-- [ ] Preserve Zero Risk behavior outside automatic browser lifecycle.
-- [ ] Preserve saved/temporary chat configuration.
-- [ ] Preserve existing diagnostics during migration.
-- [ ] Remove dead legacy orchestration paths only after replacement tests pass.
+- [x] Wire new Core into ChatGPT Web adapter incrementally.
+- [x] Preserve public Responses behavior.
+- [x] Preserve Browser-only.
+- [x] Preserve Full Harness.
+- [x] Preserve Zero Risk behavior outside automatic browser lifecycle.
+- [x] Preserve saved/temporary chat configuration.
+- [x] Preserve existing diagnostics during migration.
+- [x] Remove dead legacy orchestration paths only after replacement tests pass.
 
 ## Phase 11 — observability
 
@@ -163,20 +163,20 @@ Acceptance:
 
 ## Phase 12 — fault injection and regression coverage
 
-- [ ] DOM disappears during stream.
-- [ ] DOM remounts with a new revision.
-- [ ] 200 + chunks + ERR_ABORTED.
-- [ ] Request fails before response.
-- [ ] Primary 200 plus auxiliary 404.
-- [ ] Tool call stalls.
-- [ ] Tool completes after DOM remount.
-- [ ] Tunnel restarts.
-- [ ] Browser reconnects.
-- [ ] Codex cancels mid-turn.
-- [ ] Two simultaneous turns.
-- [ ] Compaction rewrites provisional renderer.
-- [ ] Compaction is cancelled/replaced.
-- [ ] Event queue pressure/coalescing.
+- [x] DOM disappears during stream.
+- [x] DOM remounts with a new revision.
+- [x] 200 + chunks + ERR_ABORTED.
+- [x] Request fails before response.
+- [x] Primary 200 plus auxiliary 404.
+- [x] Tool call stalls.
+- [x] Tool completes after DOM remount.
+- [x] Tunnel restarts.
+- [x] Browser reconnects.
+- [x] Codex cancels mid-turn.
+- [x] Two simultaneous turns.
+- [x] Compaction rewrites provisional renderer.
+- [x] Compaction is cancelled/replaced.
+- [x] Event queue pressure/coalescing.
 
 ## Phase 13 — validation and cleanup
 
@@ -206,3 +206,6 @@ Acceptance:
 - 2026-09-30 — Phase 8 completed: MCP execution is behind a ToolRuntimePort, per-turn tool transitions are centralized, same-batch reconnect is idempotent, foreign/late tool events fail closed, and existing Codex approval/sandbox behavior remains in the broker boundary.
 - 2026-09-30 — Phase 9 completed: automatic Web turns and browser workers now have explicit supervisors; Runtime/Tunnel ownership remains unchanged; lifecycle timing uses named deadline/settle/watchdog policies and supervisor tests prove turn isolation.
 - 2026-09-30 — Phase 11 completed: daemon and launcher-helper lifecycles expose bounded structured traces with trace/turn/request identity, monotonic sequence, source and timestamp; terminal causes are redacted; CDP-primary/Playwright-fallback transport prevents duplicate accounting.
+
+- 2026-09-30 — Phase 10 integration review completed: automatic Browser-only and Full Harness use the actor-owned lifecycle end-to-end, launcher-helper lifecycle events round-trip to the daemon actor, Zero Risk stays outside automatic browser lifecycle, and diagnostics preserve structured lifecycle snapshots.
+- 2026-09-30 — Phase 12 fault-injection matrix completed in tests. Additional hardening fixed recoverable primary-request takeover and prevented DOM coalescing from crossing critical mailbox event boundaries.
