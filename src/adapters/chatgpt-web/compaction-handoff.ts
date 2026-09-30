@@ -16,11 +16,7 @@ import {
 } from "./native-compaction-control";
 import type { BrokerToolResult, TurnBroker, TurnBrokerOwner } from "./turn-broker";
 import type { ChatGptTurnSession } from "./turn-execution";
-import {
-  createCompactionState,
-  reduceCompactionState,
-  type CompactionState,
-} from "../../core/compaction/compaction-session";
+import { CompactionLifecycleCoordinator } from "../../application/compaction-lifecycle-coordinator";
 
 export const LATEST_USER_PROMPT_MARKER = "CODEX_LATEST_USER_PROMPT_JSON";
 
@@ -305,11 +301,12 @@ export async function requestRetainedCompactionHandoff(
   const abortBrowser = () => browserAbort.abort(operationSignal.reason);
   let transaction: CompactionTransactionHandle | undefined;
   let browser: Promise<string> | undefined;
-  let lifecycle: CompactionState = createCompactionState();
+  const lifecycle = new CompactionLifecycleCoordinator();
   if (operationSignal.aborted) abortBrowser();
   else operationSignal.addEventListener("abort", abortBrowser, { once: true });
 
   try {
+    await lifecycle.settleSource();
     const transactionPromise = broker.beginCompactionTransaction(traceId, operationTimeoutMs);
     void transactionPromise.then(lateTransaction => {
       if (operationSignal.aborted && transaction !== lateTransaction) {
@@ -317,11 +314,7 @@ export async function requestRetainedCompactionHandoff(
       }
     }, () => {});
     transaction = await withCompactionAbort(transactionPromise, operationSignal);
-    lifecycle = reduceCompactionState(lifecycle, {
-      type: "wait_handoff",
-      at: Date.now(),
-      transactionId: transaction.handoffId,
-    });
+    await lifecycle.waitHandoff(transaction.handoffId);
 
     const instruction = structuredCompactionHandoffInstruction(transaction);
     const prepare = async () => ({ text: instruction, images: [], release: () => {} });
@@ -350,25 +343,26 @@ export async function requestRetainedCompactionHandoff(
       Promise.race([handoff, browserWithoutHandoff]),
       operationSignal,
     );
-    lifecycle = reduceCompactionState(lifecycle, { type: "handoff_received", at: Date.now() });
+    await lifecycle.handoffReceived();
 
-    lifecycle = reduceCompactionState(lifecycle, { type: "retire_browser", at: Date.now() });
+    await lifecycle.retireBrowser();
     browserAbort.abort(new ChatGptCompactionHandoffAccepted());
     await withCompactionAbort(
       browser.then(() => undefined, () => undefined),
       operationSignal,
     );
-    lifecycle = reduceCompactionState(lifecycle, { type: "browser_retired", at: Date.now() });
-    if (lifecycle.phase !== "completed") {
-      throw new Error(`Structured compaction ended in unexpected phase ${lifecycle.phase}`);
+    await lifecycle.browserRetired();
+    if (lifecycle.snapshot().phase !== "completed") {
+      throw new Error(`Structured compaction ended in unexpected phase ${lifecycle.snapshot().phase}`);
     }
     return summary;
   } catch (error) {
     const reason = error instanceof Error ? error : new Error(String(error));
-    if (lifecycle.phase !== "completed" && lifecycle.phase !== "failed" && lifecycle.phase !== "cancelled") {
-      lifecycle = reduceCompactionState(lifecycle, operationSignal.aborted
-        ? { type: "cancel", at: Date.now(), reason: reason.message }
-        : { type: "fail", at: Date.now(), reason: reason.message });
+    const phase = lifecycle.snapshot().phase;
+    if (phase !== "completed" && phase !== "failed" && phase !== "cancelled") {
+      await (operationSignal.aborted
+        ? lifecycle.cancel(reason.message)
+        : lifecycle.fail(reason.message)).catch(() => {});
     }
     throw error;
   } finally {
