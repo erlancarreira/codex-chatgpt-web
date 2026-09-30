@@ -62,12 +62,19 @@ steps:
       - browser-contracts
     commands:
       - bun test ./tests
-      - bun run launcher:test
+
+  launcher-tests:
+    image: node:22-bookworm-slim
+    depends_on:
+      - full-tests
+    commands:
+      - cd launcher
+      - node --test tests/*.test.cjs
 
   build:
     image: oven/bun:1.4.0
     depends_on:
-      - full-tests
+      - launcher-tests
     commands:
       - bun run build
       - bun run launcher:build
