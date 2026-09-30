@@ -50,6 +50,8 @@ import {
   retainedConversationResumeRequest,
 } from "./conversation-key";
 import { WebTurnLifecycleCoordinator } from "../../application/web-turn-lifecycle-coordinator";
+import { WebTurnToolLifecycle } from "../../application/web-turn-tool-lifecycle";
+import { ChatGptBrokerToolRuntime } from "./broker-tool-runtime";
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
@@ -1244,8 +1246,11 @@ export function createChatGptWebAdapter(
             }
 
             let turnToken: string | undefined;
+            let toolRuntime: ChatGptBrokerToolRuntime | undefined;
+            const toolLifecycle = new WebTurnToolLifecycle(session.runtime.lifecycle);
             if (session.runtime.mode === "tools") {
               turnToken = await withAbort(session.runtime.token, incoming.abortSignal);
+              toolRuntime = new ChatGptBrokerToolRuntime(broker, async () => turnToken!);
               if (!environment) throw new Error("Tool-capable ChatGPT web runtime lost its trusted environment");
               await broker.updateEnvironment(turnToken, environment);
 
@@ -1267,17 +1272,16 @@ export function createChatGptWebAdapter(
                   throw new Error(`Codex returned ${results.length} of ${outstanding.length} results for a parallel ChatGPT tool batch`);
                 }
                 for (const message of results) {
-                  await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
-                  session.runtime.externalProgress.recordToolResult();
-                  const lifecycle = session.runtime.lifecycle;
-                  if (lifecycle?.snapshot().activeToolCalls.includes(message.toolCallId)) {
-                    await lifecycle.dispatch("tool", {
-                      type: "tool_completed",
-                      at: Date.now(),
-                      callId: message.toolCallId,
-                    });
+                  try {
+                    await toolRuntime!.complete(message.toolCallId, brokerResult(message));
+                    session.runtime.externalProgress.recordToolResult();
+                    await toolLifecycle.completed(message.toolCallId);
+                    session.markResultDelivered(message.toolCallId);
+                  } catch (error) {
+                    const reason = error instanceof Error ? error.message : String(error);
+                    await toolLifecycle.failed(message.toolCallId, reason).catch(() => {});
+                    throw error;
                   }
-                  session.markResultDelivered(message.toolCallId);
                 }
               }
             } else if (session.outstanding().length > 0) {
@@ -1303,32 +1307,13 @@ export function createChatGptWebAdapter(
               const externalProgress = session.runtime.mode === "tools"
                 ? session.runtime.externalProgress
                 : undefined;
-              const armNextTools = () => turnToken
-                ? broker.nextToolBatch(turnToken, toolWaitAbort.signal).then(async requests => {
+              const armNextTools = () => toolRuntime
+                ? toolRuntime.nextBatch(toolWaitAbort.signal).then(async requests => {
                   if (!externalProgress) {
                     throw new Error("ChatGPT broker returned tools for a read-only browser turn");
                   }
                   if (requests.length > 0) {
-                    const lifecycle = session.runtime.lifecycle;
-                    if (lifecycle) {
-                      const callIds = requests.map(request => request.callId);
-                      const active = lifecycle.snapshot().activeToolCalls;
-                      if (active.length === 0) {
-                        await lifecycle.dispatch("tool", {
-                          type: "tool_requested",
-                          at: Date.now(),
-                          callIds,
-                        });
-                      } else {
-                        const sameBatch = active.length === callIds.length
-                          && active.every(callId => callIds.includes(callId));
-                        if (!sameBatch) {
-                          throw new Error(
-                            `ChatGPT broker replayed a tool batch that does not match the actor-owned batch: active=${active.join(",")} received=${callIds.join(",")}`,
-                          );
-                        }
-                      }
-                    }
+                    await toolLifecycle.requestBatch(requests.map(request => request.callId));
                     const revision = externalProgress.recordToolBatch(requests.length);
                     if (!session.runtime.manualControl) {
                       // The browser outcome is in the same race below and owns the semantic DOM and
@@ -1358,7 +1343,7 @@ export function createChatGptWebAdapter(
                 emitNewText(session.runtime.text.drain());
                 session.setFinalReasoning(roundReasoning);
                 session.setFinalEvents(session.roundEvents(roundKey));
-                if (turnToken) await broker.revoke(turnToken);
+                if (toolRuntime) await toolRuntime.revoke();
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
                   throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
@@ -1424,17 +1409,8 @@ export function createChatGptWebAdapter(
                   return;
                 }
                 validateBatchTools(parsed, next.requests);
-                const lifecycle = session.runtime.lifecycle;
-                if (lifecycle) {
-                  for (const request of next.requests) {
-                    if (!lifecycle.snapshot().startedToolCalls.includes(request.callId)) {
-                      await lifecycle.dispatch("tool", {
-                        type: "tool_started",
-                        at: Date.now(),
-                        callId: request.callId,
-                      });
-                    }
-                  }
+                for (const request of next.requests) {
+                  await toolLifecycle.started(request.callId);
                 }
                 session.setOutstanding(next.requests, roundReasoning, session.roundEvents(roundKey));
                 emitRoundBatch(buffer => emitToolBatch(
