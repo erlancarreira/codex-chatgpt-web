@@ -37,6 +37,7 @@ export interface TransportRequestState {
   readonly url: string;
   readonly method: string;
   readonly sentAt: number;
+  readonly lastActivityAt: number;
   readonly lifecycle: TransportRequestLifecycle;
   readonly responseStatus?: number;
   readonly responseAt?: number;
@@ -163,6 +164,7 @@ function reduceRequest(
       url: observation.url,
       method: observation.method,
       sentAt: observation.at,
+      lastActivityAt: observation.at,
       lifecycle: "sent",
       bytesReceived: 0,
       chunksReceived: 0,
@@ -195,6 +197,7 @@ function reduceRequest(
         lifecycle: "accepted",
         responseStatus: observation.status,
         responseAt: observation.at,
+        lastActivityAt: observation.at,
       }, observation.evidenceKey);
     }
 
@@ -210,6 +213,7 @@ function reduceRequest(
         lifecycle: "streaming",
         bytesReceived: existing.bytesReceived + observation.bytes,
         chunksReceived: existing.chunksReceived + 1,
+        lastActivityAt: observation.at,
       }, observation.evidenceKey);
 
     case "request_finished":
@@ -218,6 +222,7 @@ function reduceRequest(
         ...existing,
         lifecycle: "finished",
         finishedAt: observation.at,
+        lastActivityAt: observation.at,
       }, observation.evidenceKey);
 
     case "request_failed":
@@ -227,6 +232,7 @@ function reduceRequest(
         lifecycle: "failed",
         failedAt: observation.at,
         failureText: observation.errorText,
+        lastActivityAt: observation.at,
       }, observation.evidenceKey);
   }
 }
