@@ -1,16 +1,30 @@
+# CodexNative Web
+
+> **Maintained fork:** this repository is the CodexNative Web distribution maintained at `erlancarreira/codex-chatgpt-web`, derived from `miuuyy/codex-chatgpt-web`.
+>
+> Use the dedicated [CodexNative Web installation and operations guide](docs/codexnative-web.md) for this fork. The historical runtime/binary names are intentionally retained for compatibility, so do **not** install the upstream distribution side by side under the same OS user.
+
 <p align="center">
   <img src="assets/readme/hero.svg" width="960" alt="Switch to web models. Stay in Codex. Your ChatGPT plan. Your workflow. Maximum capabilities.">
 </p>
 
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
+  <a href="docs/codexnative-web.md"><strong>Install CodexNative Web</strong></a> ·
+  <a href="https://github.com/erlancarreira/codex-chatgpt-web/releases">CodexNative Web releases</a> ·
+  <a href="https://github.com/miuuyy/codex-chatgpt-web">Upstream project</a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-mac-x64.dmg">macOS Intel</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/latest">All releases</a>
-</p>
+<details>
+<summary><strong>Direct CodexNative Web release assets</strong></summary>
+
+These URLs are the release contract for this fork and become downloadable when the corresponding CodexNative Web release is published.
+
+- Windows x64: https://github.com/erlancarreira/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-win-x64.exe
+- macOS Apple silicon: https://github.com/erlancarreira/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-mac-arm64.dmg
+- macOS Intel: https://github.com/erlancarreira/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-mac-x64.dmg
+- Linux x64: https://github.com/erlancarreira/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-linux-x64.AppImage
+
+</details>
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
@@ -21,7 +35,7 @@
 </p>
 
 <p align="center">
-  <a href="#get-started">Get started</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">What’s new</a> · <a href="docs/architecture.md">Architecture</a> · <a href="TROUBLESHOOTING.md">Troubleshooting</a>
+  <a href="#get-started">Get started</a> · <a href="https://github.com/erlancarreira/codex-chatgpt-web/releases">What’s new</a> · <a href="docs/architecture.md">Architecture</a> · <a href="TROUBLESHOOTING.md">Troubleshooting</a>
 </p>
 
 Use the ChatGPT Web models available on your account, including Pro, from Codex’s native model picker—with ChatGPT Web’s separate usage limits, without spending your Work or Codex quota. Keep the same interface, tasks, images, and streaming.
@@ -34,7 +48,7 @@ Full harness mode connects ChatGPT to the current task’s files, terminal, tool
 
 **Available models:** Free/Go → **Luna / Think**. Accounts with reasoning controls → **Instant–High**, plus **Extra High** and **Pro** when available. The launcher detects what your account can use.
 
-1. **Install the launcher** using the download for your system above.
+1. **Install the launcher** using the CodexNative Web installation guide or terminal command above.
 2. **Sign in to ChatGPT** in the embedded browser and run the browser smoke test.
 3. **Install models** and restart Codex once. In automatic mode, choose a model ending in **(Web)**. Pro versions have separate entries; Sol reasoning is selected through Effort. Zero Risk keeps its dedicated entry.
 4. **For coding with tools**, open **MCP** in the launcher and complete the Full harness setup below.
@@ -49,13 +63,13 @@ Quit the launcher before updating. These installers select the platform and arch
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://raw.githubusercontent.com/erlancarreira/codex-chatgpt-web/main/scripts/install-launcher.sh | sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://raw.githubusercontent.com/erlancarreira/codex-chatgpt-web/main/scripts/install-launcher.ps1 | iex
 ```
 
 </details>
@@ -165,7 +179,7 @@ and workspace policies; it does not bypass authentication or access controls.
 <a id="development"></a>
 
 ```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
+git clone https://github.com/erlancarreira/codex-chatgpt-web.git && \
 cd codex-chatgpt-web && \
 bun run app
 ```
@@ -198,6 +212,6 @@ bun run app:package
 
 ---
 
-[Troubleshooting](TROUBLESHOOTING.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE) · [CI](https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml)
+[Troubleshooting](TROUBLESHOOTING.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE) · [Repository](https://github.com/erlancarreira/codex-chatgpt-web)
 
 Also by me: <img src="assets/readme/persona-voice.svg" width="20" height="20" alt=""> [ChatGPT Persona Voice](https://github.com/miuuyy/ChatGPT-Persona-Voice) — local, near-real-time custom voices for ChatGPT and Codex.
