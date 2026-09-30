@@ -6127,7 +6127,14 @@ export class ChatGptBrowserWorker {
         const state = await this.context.storageState();
         atomicWriteFile(this.config.storageStatePath, `${JSON.stringify(state)}\n`);
       }
-      await diagnostics.capture(page, "turn-completed");
+      await diagnostics.capture(
+        page,
+        "turn-completed",
+        undefined,
+        turn.lifecycle?.diagnosticSnapshot
+          ? { lifecycle: turn.lifecycle.diagnosticSnapshot() }
+          : undefined,
+      );
       console.info(
         `[chatgpt-web] browser turn ${turn.traceId} completed`
         + ` (markdownChars=${finalText.length}, domFullScans=${responseDomCache.fullScans ?? 0}, domCacheHits=${responseDomCache.cacheHits ?? 0})`,
@@ -6166,7 +6173,12 @@ export class ChatGptBrowserWorker {
           diagnosticPage,
           "turn-failed",
           error,
-          { network: submissionRejection.networkSnapshot() },
+          {
+            network: submissionRejection.networkSnapshot(),
+            ...(turn.lifecycle?.diagnosticSnapshot
+              ? { lifecycle: turn.lifecycle.diagnosticSnapshot() }
+              : {}),
+          },
         );
       }
       throw error;
