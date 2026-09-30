@@ -2,16 +2,16 @@ import type { ToolRuntimePort } from "../../ports/tool-runtime";
 import type {
   BrokerToolRequest,
   BrokerToolResult,
-  TurnBroker,
+  TurnBrokerOwner,
 } from "./turn-broker";
 
 export class ChatGptBrokerToolRuntime implements ToolRuntimePort<BrokerToolRequest, BrokerToolResult> {
   constructor(
-    private readonly broker: TurnBroker,
+    private readonly broker: TurnBrokerOwner,
     private readonly token: () => Promise<string>,
   ) {}
 
-  async nextBatch(signal?: AbortSignal): Promise<readonly BrokerToolRequest[]> {
+  async nextBatch(signal?: AbortSignal): Promise<BrokerToolRequest[]> {
     return this.broker.nextToolBatch(await this.token(), signal);
   }
 
