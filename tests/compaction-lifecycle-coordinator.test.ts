@@ -1,27 +1,25 @@
 import { expect, test } from "bun:test";
 import { CompactionLifecycleCoordinator } from "../src/application/compaction-lifecycle-coordinator";
 
-test("compaction coordinator serializes the complete structured handoff lifecycle", async () => {
+test("compaction coordinator commits logical success independently of browser teardown", async () => {
   let now = 0;
   const lifecycle = new CompactionLifecycleCoordinator({ now: () => ++now });
   await lifecycle.settleSource();
   await lifecycle.waitHandoff("handoff-1");
   await lifecycle.handoffReceived();
-  await lifecycle.retireBrowser();
-  await lifecycle.browserRetired();
+  await lifecycle.complete();
 
   expect(lifecycle.snapshot()).toMatchObject({
     phase: "completed",
     handoffReceived: true,
-    browserRetired: true,
-    sequence: 5,
+    browserRetired: false,
+    sequence: 4,
   });
   expect(lifecycle.events().map(event => event.type)).toEqual([
     "settle_source",
     "wait_handoff",
     "handoff_received",
-    "retire_browser",
-    "browser_retired",
+    "complete",
   ]);
 });
 

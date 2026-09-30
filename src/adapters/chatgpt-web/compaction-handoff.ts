@@ -284,16 +284,25 @@ export async function requestRetainedCompactionHandoff(
   traceId: string,
   signal?: AbortSignal,
   timeoutMs = MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
+  onProgress?: () => void,
+  onPhysicalSettlement?: (settlement: Promise<void>) => void,
 ): Promise<string> {
   const conversationKey = source.conversationKey();
   if (!conversationKey) throw new Error("The completed ChatGPT source has no retained conversation identity");
   const operationTimeoutMs = boundedCompactionTimeout(timeoutMs);
   const deadline = new AbortController();
-  const deadlineTimer = setTimeout(
-    () => deadline.abort(new Error(`ChatGPT compaction handoff timed out after ${operationTimeoutMs}ms`)),
-    operationTimeoutMs,
-  );
-  deadlineTimer.unref?.();
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const armDeadline = (): void => {
+    if (deadline.signal.aborted) return;
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+    deadlineTimer = setTimeout(
+      () => deadline.abort(new Error(`ChatGPT compaction handoff timed out after ${operationTimeoutMs}ms`)),
+      operationTimeoutMs,
+    );
+    deadlineTimer.unref?.();
+    onProgress?.();
+  };
+  armDeadline();
   const operationSignal = signal
     ? AbortSignal.any([signal, deadline.signal])
     : deadline.signal;
@@ -314,6 +323,7 @@ export async function requestRetainedCompactionHandoff(
       }
     }, () => {});
     transaction = await withCompactionAbort(transactionPromise, operationSignal);
+    armDeadline();
     await lifecycle.waitHandoff(transaction.handoffId);
 
     const instruction = structuredCompactionHandoffInstruction(transaction);
@@ -329,8 +339,13 @@ export async function requestRetainedCompactionHandoff(
       conversationKey,
       requireRetainedConversation: true,
       abortSignal: browserAbort.signal,
-      onTextDelta: () => {},
+      onSubmitted: armDeadline,
+      onReasoningSummary: () => armDeadline(),
+      onCommentary: () => armDeadline(),
+      onTextDelta: () => armDeadline(),
     });
+    const browserSettlement = browser.then(() => undefined, () => undefined);
+    onPhysicalSettlement?.(browserSettlement);
 
     const handoff = broker.waitForCompactionHandoff(transaction.token, operationSignal);
     const browserWithoutHandoff = browser.then<never>(() => {
@@ -344,17 +359,11 @@ export async function requestRetainedCompactionHandoff(
       operationSignal,
     );
     await lifecycle.handoffReceived();
+    await lifecycle.complete();
 
-    await lifecycle.retireBrowser();
+    // The broker receipt is the logical commit. Teardown is deliberately detached from success:
+    // the shared owner gate keeps replacement work serialized until physical settlement finishes.
     browserAbort.abort(new ChatGptCompactionHandoffAccepted());
-    await withCompactionAbort(
-      browser.then(() => undefined, () => undefined),
-      operationSignal,
-    );
-    await lifecycle.browserRetired();
-    if (lifecycle.snapshot().phase !== "completed") {
-      throw new Error(`Structured compaction ended in unexpected phase ${lifecycle.snapshot().phase}`);
-    }
     return summary;
   } catch (error) {
     const reason = error instanceof Error ? error : new Error(String(error));
@@ -368,14 +377,8 @@ export async function requestRetainedCompactionHandoff(
   } finally {
     browserAbort.abort();
     if (transaction) broker.abortCompactionTransaction(transaction.token);
-    if (browser) {
-      await withCompactionAbort(
-        browser.then(() => undefined, () => undefined),
-        operationSignal,
-      ).catch(() => {});
-    }
     operationSignal.removeEventListener("abort", abortBrowser);
-    clearTimeout(deadlineTimer);
+    if (deadlineTimer) clearTimeout(deadlineTimer);
   }
 }
 

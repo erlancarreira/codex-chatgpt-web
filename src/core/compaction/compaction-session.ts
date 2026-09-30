@@ -12,6 +12,7 @@ export type CompactionEvent =
   | { type: "settle_source"; at: number }
   | { type: "wait_handoff"; at: number; transactionId: string }
   | { type: "handoff_received"; at: number }
+  | { type: "complete"; at: number }
   | { type: "retire_browser"; at: number }
   | { type: "browser_retired"; at: number }
   | { type: "fail"; at: number; reason: string }
@@ -75,6 +76,11 @@ export function reduceCompactionState(state: CompactionState, event: CompactionE
     case "handoff_received":
       assertEvent(state, event, ["handoff_waiting"]);
       return next(state, event, { phase: "handoff_received", handoffReceived: true });
+
+    case "complete":
+      assertEvent(state, event, ["handoff_received"]);
+      if (!state.handoffReceived) throw new InvalidCompactionTransitionError(state.phase, event.type);
+      return next(state, event, { phase: "completed" });
 
     case "retire_browser":
       assertEvent(state, event, ["handoff_received"]);

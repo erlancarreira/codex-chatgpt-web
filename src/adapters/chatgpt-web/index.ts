@@ -932,12 +932,13 @@ export function createChatGptWebAdapter(
               .slice(0, 12);
             const freshCompactionTraceId = `${handoffTraceId}_${freshConversationPerTurn ? "fresh" : "fallback"}`;
             const compactionNativeIdentity = extractChatGptTurnIdentity(parsed);
+            const compactionOwnerKey = `${executionNamespace}:${chatGptThreadOwnershipKey(parsed)}`;
             let sharedSummary = existingStructuredCompactionRun(compactionExecutionKey);
             if (!sharedSummary) {
               sharedSummary = runStructuredCompactionOnce(
                 compactionExecutionKey,
                 {
-                  ownerKey: `${executionNamespace}:${chatGptThreadOwnershipKey(parsed)}`,
+                  ownerKey: compactionOwnerKey,
                   traceIds: [
                     compactionTraceId,
                     handoffTraceId,
@@ -1067,6 +1068,7 @@ export function createChatGptWebAdapter(
                         operationSignal,
                       );
                       preserveFinalResponse = !settlement.compactionInstructionDelivered;
+                      armHandoffDeadline();
                       rawSummary = await requestRetainedCompactionHandoff(
                         worker,
                         parsed,
@@ -1076,6 +1078,11 @@ export function createChatGptWebAdapter(
                         handoffTraceId,
                         operationSignal,
                         handoffTimeoutMs,
+                        armHandoffDeadline,
+                        settlement => {
+                          retainOwnershipUntil(settlement);
+                          chatGptTurnSessions.retainOwnerUntil(compactionOwnerKey, settlement);
+                        },
                       );
                     } else {
                       if (source.isActive()) {
@@ -1084,6 +1091,7 @@ export function createChatGptWebAdapter(
                         await withAbort(source.physicalSettlement, operationSignal);
                         preserveFinalResponse = true;
                       }
+                      armHandoffDeadline();
                       rawSummary = await requestRetainedCompactionHandoff(
                         worker,
                         parsed,
@@ -1093,19 +1101,29 @@ export function createChatGptWebAdapter(
                         handoffTraceId,
                         operationSignal,
                         handoffTimeoutMs,
+                        armHandoffDeadline,
+                        settlement => {
+                          retainOwnershipUntil(settlement);
+                          chatGptTurnSessions.retainOwnerUntil(compactionOwnerKey, settlement);
+                        },
                       );
                     }
                     const summary = canonicalizeCompactionHandoff(parsed, rawSummary);
-                    await withAbort(
-                      preserveFinalResponse
-                        ? chatGptTurnSessions.retireConversationPreservingFinalResponse(
-                          retainedKey,
-                          source,
-                          compactedSourceExecutionKey,
-                        )
-                        : chatGptTurnSessions.retireConversationAndWait(retainedKey),
-                      operationSignal,
-                    );
+                    // The canonical checkpoint is the logical completion boundary. Detach the
+                    // retained epoch now, then serialize replacement work behind physical cleanup.
+                    const retirement = preserveFinalResponse
+                      ? chatGptTurnSessions.beginRetireConversationPreservingFinalResponse(
+                        retainedKey,
+                        source,
+                        compactedSourceExecutionKey,
+                      )
+                      : chatGptTurnSessions.beginRetireConversation(retainedKey);
+                    retainOwnershipUntil(retirement.settlement);
+                    void retirement.settlement.catch(error => {
+                      console.error(
+                        `[chatgpt-web] post-compaction retained cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+                      );
+                    });
                     return summary;
                   } catch (error) {
                     const retainedKey = source?.conversationKey();

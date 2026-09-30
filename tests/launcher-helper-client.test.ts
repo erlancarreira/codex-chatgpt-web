@@ -377,6 +377,57 @@ test("an abort dispatched during run submission cannot overtake the run frame", 
   expect(released).toBe(false);
 });
 
+test("an aborted helper turn is force-retired when the helper never acknowledges abort", async () => {
+  const controller = new AbortController();
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native",
+    browserHost: "launcher",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+    useSavedChats: false,
+  }, 25);
+  const messages: string[] = [];
+  let terminated = false;
+  type FakeChild = { killed: boolean; exitCode: number | null; signalCode: string | null };
+  const child: FakeChild = { killed: false, exitCode: null, signalCode: null };
+  const internal = client as unknown as {
+    child?: FakeChild;
+    ensureChild(): Promise<void>;
+    send(message: { type: string; id?: string }): Promise<void>;
+    terminateChild(child: FakeChild, gracefulTimeoutMs: number): Promise<void>;
+    finishWithError(id: string, error: Error): void;
+  };
+  internal.child = child;
+  internal.ensureChild = async () => {};
+  internal.send = async message => {
+    messages.push(message.type);
+    if (message.type === "run") {
+      queueMicrotask(() => controller.abort(new ChatGptCompactionHandoffAccepted()));
+    }
+  };
+  internal.terminateChild = async () => {
+    terminated = true;
+    internal.finishWithError("stalled-abort-123", new Error("simulated stuck helper terminated"));
+  };
+
+  await expect(client.run({
+    traceId: "stalled-abort-123",
+    modelId: "gpt-5.6-sol",
+    reasoning: "high",
+    capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+    abortSignal: controller.signal,
+    prepare: async () => ({ text: "inspect", images: [], release() {} }),
+    onTextDelta() {},
+  })).rejects.toThrow("simulated stuck helper terminated");
+
+  expect(messages).toEqual(["run", "abort"]);
+  expect(terminated).toBeTrue();
+});
+
 test("structured helper errors preserve the ChatGPT adapter failure contract", async () => {
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native",

@@ -442,7 +442,7 @@ test("a checkpoint submitted before browser completion wins the terminal respons
   }
 });
 
-test("retained compaction deadline bounds browser settlement after the control handoff succeeds", async () => {
+test("retained compaction returns an accepted checkpoint without waiting for browser teardown", async () => {
   const sourceRequest = request(false);
   const source = new ChatGptTurnSession({
     mode: "read-only",
@@ -463,10 +463,12 @@ test("retained compaction deadline bounds browser settlement after the control h
     waitForCompactionHandoff: async () => "Already submitted checkpoint",
     abortCompactionTransaction: () => { transactionAborted = true; },
   } as unknown as TurnBroker;
-  const worker = {
-    run: async () => new Promise<string>(() => {}),
-  };
+  let releaseBrowser!: () => void;
+  const browserRun = new Promise<string>(resolve => { releaseBrowser = () => resolve("cleanup completed"); });
+  const worker = { run: async () => await browserRun };
+  let physicalSettlement: Promise<void> | undefined;
 
+  const startedAt = performance.now();
   await expect(requestRetainedCompactionHandoff(
     worker as never,
     request(true),
@@ -476,9 +478,72 @@ test("retained compaction deadline bounds browser settlement after the control h
     "trace_deadline",
     undefined,
     25,
-  )).rejects.toThrow("timed out after 25ms");
+    undefined,
+    settlement => { physicalSettlement = settlement; },
+  )).resolves.toBe("Already submitted checkpoint");
+  expect(performance.now() - startedAt).toBeLessThan(200);
   expect(transactionAborted).toBeTrue();
+  expect(physicalSettlement).toBeDefined();
+
+  let settled = false;
+  void physicalSettlement!.then(() => { settled = true; });
+  await Bun.sleep(0);
+  expect(settled).toBeFalse();
+  releaseBrowser();
+  await physicalSettlement;
+  expect(settled).toBeTrue();
 });
+
+test("retained compaction forward progress re-arms the handoff inactivity deadline", async () => {
+  const sourceRequest = request(false);
+  const source = new ChatGptTurnSession({
+    mode: "read-only",
+    browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    usageInput: sourceRequest,
+    conversationKey: chatGptConversationKey(sourceRequest, "provider")!,
+    cancel() {},
+  });
+  const broker = {
+    beginCompactionTransaction: async () => ({
+      token: "control_11111111111111111111111111111111",
+      handoffId: "handoff_22222222222222222222222222222222",
+    }),
+    waitForCompactionHandoff: async () => {
+      await Bun.sleep(80);
+      return "Progressive retained checkpoint";
+    },
+    abortCompactionTransaction() {},
+  } as unknown as TurnBroker;
+  let progressEvents = 0;
+  const worker = {
+    run: async (turn: BrowserTurn): Promise<string> => {
+      await turn.onSubmitted?.();
+      setTimeout(() => turn.onReasoningSummary?.("Still compacting"), 40);
+      return await new Promise<string>((_resolve, reject) => {
+        const onAbort = () => reject(new DOMException("retained handoff browser closed", "AbortError"));
+        if (turn.abortSignal?.aborted) onAbort();
+        else turn.abortSignal?.addEventListener("abort", onAbort, { once: true });
+      });
+    },
+  };
+
+  await expect(requestRetainedCompactionHandoff(
+    worker as never,
+    request(true),
+    source,
+    broker,
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    "trace_progressive_handoff",
+    undefined,
+    60,
+    () => { progressEvents += 1; },
+  )).resolves.toBe("Progressive retained checkpoint");
+  expect(progressEvents).toBeGreaterThanOrEqual(4);
+});
+
 
 test("a rejected exact compaction run is evicted while a successful run remains replayable", async () => {
   const key = `exact-retry-${Date.now()}-${Math.random()}`;
@@ -973,6 +1038,37 @@ test("a later native message still waits when logical completion happened before
   await Bun.sleep(0);
   expect(starts).toBe(0);
   settlePhysical();
+  await replacement;
+  expect(starts).toBe(1);
+  sessions.clear();
+});
+
+test("tracked owner cleanup serializes replacement and settles even when cleanup rejects", async () => {
+  const sessions = new ChatGptTurnSessions();
+  let releaseCleanup!: () => void;
+  const cleanup = new Promise<void>((_resolve, reject) => {
+    releaseCleanup = () => reject(new Error("cleanup finished with an error"));
+  });
+  sessions.retainOwnerUntil("owner-retirement", cleanup);
+  let starts = 0;
+  const replacement = sessions.getOrCreateAfterOwnerRetirement(
+    "replacement-after-cleanup",
+    "owner-retirement",
+    () => {
+      starts += 1;
+      return {
+        mode: "read-only",
+        browser: Promise.resolve("replacement"),
+        physicalSettlement: Promise.resolve(),
+        trace: new ChatGptTraceFeed(),
+        text: new ChatGptTextFeed(),
+        cancel() {},
+      };
+    },
+  );
+  await Bun.sleep(0);
+  expect(starts).toBe(0);
+  releaseCleanup();
   await replacement;
   expect(starts).toBe(1);
   sessions.clear();

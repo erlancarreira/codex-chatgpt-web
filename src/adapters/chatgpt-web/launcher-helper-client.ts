@@ -2,7 +2,12 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
-import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../launcher-browser-host";
+import {
+  LAUNCHER_TURN_END_TIMEOUT_MS,
+  LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS,
+  notifyLauncherTurn,
+  readLauncherBrowserHostDescriptor,
+} from "../../launcher-browser-host";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import type { BrowserTurn, ResolvedBrowserConfig } from "./browser-worker";
@@ -12,6 +17,9 @@ import {
 } from "./rolling-checkpoint";
 import { parseTurnLifecycleWireEvent } from "./turn-lifecycle-protocol";
 import type { SequencedTurnEvent, TurnEvent } from "../../core/turn/turn-state-machine";
+
+export const LAUNCHER_HELPER_ABORT_SETTLEMENT_TIMEOUT_MS =
+  LAUNCHER_TURN_END_TIMEOUT_MS + LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS;
 
 interface PendingTurn {
   turn: BrowserTurn;
@@ -23,6 +31,7 @@ interface PendingTurn {
   localFailure?: Error;
   progressForwarding?: AbortController;
   acknowledgedMultipartStage?: number;
+  abortSettlementTimer?: ReturnType<typeof setTimeout>;
 }
 
 type HelperMessage =
@@ -207,7 +216,14 @@ export class LauncherBrowserHelperClient {
   private readonly pending = new Map<string, PendingTurn>();
   private helperFeatures = new Set<string>();
 
-  constructor(private readonly config: ResolvedBrowserConfig) {}
+  constructor(
+    private readonly config: ResolvedBrowserConfig,
+    private readonly abortSettlementTimeoutMs = LAUNCHER_HELPER_ABORT_SETTLEMENT_TIMEOUT_MS,
+  ) {
+    if (!Number.isFinite(abortSettlementTimeoutMs) || abortSettlementTimeoutMs <= 0) {
+      throw new Error("Launcher browser helper abort settlement timeout must be positive");
+    }
+  }
 
   /**
    * The helper that shipped with this daemon, when one sits beside its own entrypoint.
@@ -268,6 +284,7 @@ export class LauncherBrowserHelperClient {
               );
               return;
             }
+            this.armAbortSettlementWatchdog(turn.traceId, pending);
             void this.send({
               type: "abort",
               id: turn.traceId,
@@ -633,6 +650,7 @@ export class LauncherBrowserHelperClient {
   private abortWithLocalFailure(id: string, error: Error, pending: PendingTurn): void {
     if (this.pending.get(id) !== pending || pending.localFailure) return;
     pending.localFailure = error;
+    this.armAbortSettlementWatchdog(id, pending);
     void this.send({ type: "abort", id }).catch(sendError => {
       if (this.pending.get(id) !== pending) return;
       this.finishWithError(
@@ -643,6 +661,36 @@ export class LauncherBrowserHelperClient {
         ),
       );
     });
+  }
+
+  private armAbortSettlementWatchdog(id: string, pending: PendingTurn): void {
+    if (this.pending.get(id) !== pending || pending.abortSettlementTimer) return;
+    const child = this.child;
+    pending.abortSettlementTimer = setTimeout(() => {
+      pending.abortSettlementTimer = undefined;
+      if (this.pending.get(id) !== pending) return;
+      const timeoutError = new Error(
+        `Launcher browser helper did not settle aborted turn ${id} within ${this.abortSettlementTimeoutMs}ms`,
+      );
+      pending.localFailure ??= timeoutError;
+      if (!child || this.child !== child
+        || child.killed || child.exitCode !== null || child.signalCode !== null) {
+        this.finishWithError(id, pending.localFailure);
+        return;
+      }
+      console.warn(`[chatgpt-web-helper] ${timeoutError.message}; restarting helper process`);
+      void this.terminateChild(child, 0).catch(error => {
+        if (this.pending.get(id) !== pending) return;
+        this.finishWithError(
+          id,
+          new AggregateError(
+            [pending.localFailure, error instanceof Error ? error : new Error(String(error))],
+            `Launcher browser helper failed forced cleanup for aborted turn ${id}`,
+          ),
+        );
+      });
+    }, this.abortSettlementTimeoutMs);
+    pending.abortSettlementTimer.unref?.();
   }
 
   /**
@@ -689,6 +737,8 @@ export class LauncherBrowserHelperClient {
     }
     pending.progressForwarding?.abort();
     pending.progressForwarding = undefined;
+    if (pending.abortSettlementTimer) clearTimeout(pending.abortSettlementTimer);
+    pending.abortSettlementTimer = undefined;
     pending.prepared?.release();
     pending.prepared = undefined;
     this.pending.delete(id);

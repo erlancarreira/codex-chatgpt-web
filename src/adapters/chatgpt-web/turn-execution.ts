@@ -616,8 +616,23 @@ export class ChatGptTurnSessions {
     if (pending) await awaitWithAbort(pending, signal);
   }
 
+  retainOwnerUntil(ownerKey: string, settlement: Promise<void>): void {
+    const previous = this.ownerRetirements.get(ownerKey);
+    const gate = Promise.allSettled(previous ? [previous, settlement] : [settlement]).then(() => undefined);
+    this.ownerRetirements.set(ownerKey, gate);
+    void gate.then(() => {
+      if (this.ownerRetirements.get(ownerKey) === gate) this.ownerRetirements.delete(ownerKey);
+    });
+  }
+
+  beginRetireConversation(conversationKey: string): { count: number; settlement: Promise<void> } {
+    return this.beginCloseConversation(conversationKey);
+  }
+
   async retireConversationAndWait(conversationKey: string): Promise<number> {
-    return this.closeConversationAndWait(conversationKey);
+    const retirement = this.beginRetireConversation(conversationKey);
+    await retirement.settlement;
+    return retirement.count;
   }
 
   /**
@@ -626,35 +641,46 @@ export class ChatGptTurnSessions {
    * session remains addressable by its exact Responses execution key, so the post-compaction
    * native round can consume the already-committed answer instead of opening another browser turn.
    */
-  async retireConversationPreservingFinalResponse(
+  beginRetireConversationPreservingFinalResponse(
     conversationKey: string,
     preserved: ChatGptTurnSession,
     preservedExecutionKey: string,
-  ): Promise<number> {
+  ): { count: number; settlement: Promise<void> } {
     if (!preservedExecutionKey) throw new Error("Preserved ChatGPT response execution key is required");
     const outcome = preserved.settledOutcome();
     if (!outcome || outcome.type !== "final") {
       throw new Error("Only a settled final ChatGPT response can survive retained-conversation retirement");
     }
-    return this.closeConversationAndWait(conversationKey, {
+    return this.beginCloseConversation(conversationKey, {
       session: preserved,
       executionKey: preservedExecutionKey,
     });
   }
 
-  private async closeConversationAndWait(
+  async retireConversationPreservingFinalResponse(
+    conversationKey: string,
+    preserved: ChatGptTurnSession,
+    preservedExecutionKey: string,
+  ): Promise<number> {
+    const retirement = this.beginRetireConversationPreservingFinalResponse(
+      conversationKey,
+      preserved,
+      preservedExecutionKey,
+    );
+    await retirement.settlement;
+    return retirement.count;
+  }
+
+  private beginCloseConversation(
     conversationKey: string,
     preserved?: { session: ChatGptTurnSession; executionKey: string },
-  ): Promise<number> {
+  ): { count: number; settlement: Promise<void> } {
     const pending = this.conversationRetirements.get(conversationKey);
-    if (pending) {
-      await pending;
-      return 0;
-    }
+    if (pending) return { count: 0, settlement: pending };
     const matches = [...this.entries].filter(([, session]) => (
       session.conversationKey() === conversationKey
     ));
-    if (matches.length === 0) return 0;
+    if (matches.length === 0) return { count: 0, settlement: Promise.resolve() };
     if (preserved && !matches.some(([, session]) => session === preserved.session)) {
       throw new Error("The final ChatGPT response does not own the retained conversation being retired");
     }
@@ -677,17 +703,21 @@ export class ChatGptTurnSessions {
     const release = matches.findLast(([, session]) => (
       session.runtime.releaseRetainedConversation !== undefined
     ))?.[1].runtime.releaseRetainedConversation;
-    const retirement = Promise.all(matches.map(([, session]) => session.physicalSettlement))
+    const retirement = Promise.allSettled(matches.map(([, session]) => session.physicalSettlement))
       .then(async () => { await release?.(); });
-    this.conversationRetirements.set(conversationKey, retirement);
-    try {
-      await retirement;
-    } finally {
-      if (this.conversationRetirements.get(conversationKey) === retirement) {
+    const conversationGate = retirement.then(() => undefined, () => undefined);
+    this.conversationRetirements.set(conversationKey, conversationGate);
+    void conversationGate.then(() => {
+      if (this.conversationRetirements.get(conversationKey) === conversationGate) {
         this.conversationRetirements.delete(conversationKey);
       }
+    });
+    for (const ownerKey of new Set(matches.map(([, session]) => session.ownerKey).filter(
+      (ownerKey): ownerKey is string => ownerKey !== undefined,
+    ))) {
+      this.retainOwnerUntil(ownerKey, retirement);
     }
-    return matches.length;
+    return { count: matches.length, settlement: retirement };
   }
 
   async waitForRetirement(key: string): Promise<void> {
@@ -833,23 +863,12 @@ export class ChatGptTurnSessions {
     void retirement.then(() => {
       if (this.retirements.get(key) === retirement) this.retirements.delete(key);
     });
-    if (session.ownerKey) {
-      const previous = this.ownerRetirements.get(session.ownerKey);
-      const ownerRetirement = previous
-        ? Promise.all([previous, retirement]).then(() => undefined)
-        : retirement;
-      this.ownerRetirements.set(session.ownerKey, ownerRetirement);
-      void ownerRetirement.then(() => {
-        if (this.ownerRetirements.get(session.ownerKey!) === ownerRetirement) {
-          this.ownerRetirements.delete(session.ownerKey!);
-        }
-      });
-    }
+    if (session.ownerKey) this.retainOwnerUntil(session.ownerKey, retirement);
     if (conversationKey) {
       const previous = this.conversationRetirements.get(conversationKey);
-      const conversationRetirement = previous
-        ? Promise.all([previous, retirement]).then(() => undefined)
-        : retirement;
+      const conversationRetirement = Promise.allSettled(
+        previous ? [previous, retirement] : [retirement],
+      ).then(() => undefined);
       this.conversationRetirements.set(conversationKey, conversationRetirement);
       const forgetConversationRetirement = () => {
         if (this.conversationRetirements.get(conversationKey) === conversationRetirement) {

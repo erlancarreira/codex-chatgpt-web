@@ -2330,6 +2330,8 @@ describe("ChatGPT outer-native harness v4", () => {
     let originalTurnToken = "";
     let continuationTurnToken = "";
     let originalBrowserStopped = false;
+    let resolveOriginalBrowserStopped!: () => void;
+    const originalBrowserStoppedSignal = new Promise<void>(resolve => { resolveOriginalBrowserStopped = resolve; });
     let originalBrowserReceivedToolResult = false;
     let retainedCompactionMessages = 0;
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
@@ -2348,6 +2350,7 @@ describe("ChatGPT outer-native harness v4", () => {
             summary: "The project was inspected and the pending command completed.",
           });
           originalBrowserStopped = true;
+          resolveOriginalBrowserStopped();
           return "Structured checkpoint submitted";
         } finally {
           prepared.release();
@@ -2388,6 +2391,7 @@ describe("ChatGPT outer-native harness v4", () => {
         originalBrowserReceivedToolResult = true;
         if (JSON.stringify(nativeResult.content).includes(CODEX_ACTIVE_COMPACTION_REQUEST_MARKER)) {
           originalBrowserStopped = true;
+          resolveOriginalBrowserStopped();
           return "Stopped for the pending retained compaction handoff";
         }
         const answer = `ordinary browser final with ${(nativeResult.structuredContent as { output: string }).output}`;
@@ -2462,6 +2466,7 @@ describe("ChatGPT outer-native harness v4", () => {
       const compactEvents: AdapterEvent[] = [];
       await adapter.runTurn!(compactRequest, { headers: new Headers() }, event => compactEvents.push(event));
       expect(compactEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+      await originalBrowserStoppedSignal;
       expect(originalBrowserStopped).toBe(true);
       expect(originalBrowserReceivedToolResult).toBe(true);
       expect(retainedCompactionMessages).toBe(1);

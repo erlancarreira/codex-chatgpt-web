@@ -73,6 +73,10 @@ export class CompactionLifecycleCoordinator {
     return this.dispatch({ type: "handoff_received", at });
   }
 
+  complete(at = this.now()): Promise<CompactionState> {
+    return this.dispatch({ type: "complete", at });
+  }
+
   retireBrowser(at = this.now()): Promise<CompactionState> {
     return this.dispatch({ type: "retire_browser", at });
   }

@@ -106,7 +106,12 @@ for (const scenario of [
   const socket = config.chatgptWeb!.brokerSocketPath!;
   const broker = TurnBroker.forSocket(socket);
   const logs: string[] = [];
-  const logger = { info(event: string) { logs.push(event); }, warn() {}, error() {} };
+  let resolveRetainedRelease!: () => void;
+  const retainedRelease = new Promise<void>(resolve => { resolveRetainedRelease = resolve; });
+  const logger = { info(event: string) {
+    logs.push(event);
+    if (event === "browser.retained_conversation_released") resolveRetainedRelease();
+  }, warn() {}, error() {} };
   const host = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map(), manualTerminalSignals: new Map(), manualCompletionSignals: new Map(),
     manualOperation: null, clipboard: { writeText() {} }, logger,
@@ -206,7 +211,6 @@ for (const scenario of [
     await modelAction;
     expect(checkpoint.at(-1)).toMatchObject({ type: "done", endTurn: true });
     expect(host.manualCompletionSignals.has(starts[0])).toBeTrue();
-    expect(logs).toContain("browser.retained_conversation_released");
     const summary = checkpoint.filter(event => event.type === "text_delta").map(event => event.text).join("");
     const continuation = structuredClone(source);
     (continuation._rawBody as { input: unknown[] }).input.push(scenario.format === "v2" ? {
@@ -216,6 +220,8 @@ for (const scenario of [
     });
     const final: AdapterEvent[] = [];
     await adapter.runTurn!(continuation, { headers: new Headers() }, event => final.push(event));
+    await retainedRelease;
+    expect(logs).toContain("browser.retained_conversation_released");
     expect(starts).toHaveLength(2);
     expect(starts[1]).not.toBe(starts[0]);
     const expectedFinal = scenario.finalWins ? "Ordinary final answer before compaction" : "Final answer after compaction";
