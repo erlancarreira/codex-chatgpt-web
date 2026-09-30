@@ -28,3 +28,34 @@ test("compaction projection never emits provisional text and serializes only the
     delta: "Final checkpoint",
   });
 });
+
+
+test("compaction remount discards only provisional renderer state", () => {
+  const projection = new ChatGptCompactionProjection();
+  const provisional: ChatGptMarkdownSegment[] = [{
+    key: "old",
+    tag: "p",
+    text: "Old provisional checkpoint",
+    html: "<p>Old provisional checkpoint</p>",
+    sourceStart: 0,
+    sourceEnd: 26,
+    streamable: true,
+  }];
+  const remounted: ChatGptMarkdownSegment[] = [{
+    key: "new",
+    tag: "p",
+    text: "Final remounted checkpoint",
+    html: "<p>Final remounted checkpoint</p>",
+    sourceStart: 0,
+    sourceEnd: 25,
+    streamable: true,
+  }];
+
+  expect(projection.observe(provisional)).toBe("");
+  projection.remount();
+  expect(projection.observe(remounted)).toBe("");
+  expect(projection.finish()).toEqual({
+    markdown: "Final remounted checkpoint",
+    delta: "Final remounted checkpoint",
+  });
+});
