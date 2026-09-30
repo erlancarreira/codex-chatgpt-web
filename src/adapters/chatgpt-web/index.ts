@@ -523,8 +523,15 @@ export function createChatGptWebAdapter(
         if (!parsed._compactionRequest) submission.phase = "send_activated";
         await lifecycle?.submissionSent();
       },
-      onSubmitted: () => {
+      onSubmitted: async () => {
         if (!parsed._compactionRequest) submission.phase = "accepted";
+        // Browser/CDP remains the transport authority, but an injected/legacy worker can
+        // report accepted submission without having called onSendActivated first. Ensure the
+        // lifecycle reaches "submitted" so a proven current-turn MCP request can take over as
+        // acceptance evidence instead of deadlocking the tool boundary.
+        if (lifecycle && (lifecycle.phase() === "created" || lifecycle.phase() === "preparing")) {
+          await lifecycle.submissionSent();
+        }
         hooks.onCompactionProgress?.();
       },
     };
