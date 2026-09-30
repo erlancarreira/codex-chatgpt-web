@@ -191,7 +191,7 @@ Acceptance:
 - [x] Review for polling/sleep/unbounded-loop regressions.
 - [x] Update architecture documentation.
 - [x] Update this task file to 100% complete.
-- [ ] Mark PR ready.
+- [x] Mark PR ready.
 - [ ] Merge only after validation evidence is attached to the PR.
 
 ## Execution log
@@ -218,4 +218,4 @@ Acceptance:
 - 2026-09-30 — Full-tests proved 891 Bun tests with 0 failures; launcher node:test failed because the Bun ARM64 image provides a Node compatibility shim. The launcher node:test suite moved to a real Node 22 runner without weakening assertions.
 
 - 2026-09-30 — Localized README parity was corrected without weakening the contract: all localized READMEs now match the CodexNative Web README's 10 command fences and 7 link targets, with no stale project references.
-- 2026-09-30 — Phase 13 code validation green on head a8f15c9 in both Woodpecker push and PR pipelines: contracts/typecheck, event-core, helper IPC, browser contracts, full Bun suite, real-Node launcher suite, and build all succeeded. git diff --check is clean; architecture audit found no new operational polling/arbitrary sleep control path or direct private ChatGPT backend calls. TASK finalization commit intentionally leaves only PR-ready/merge checkboxes open until those actions occur.
+- 2026-09-30 — Phase 13 code validation green. Current PR HEAD 3a7c905 has both Woodpecker push and PR statuses green; final validation evidence was attached to PR #1. PR is ready for review; merge remains the only outstanding task.
