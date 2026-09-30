@@ -25,9 +25,9 @@ Goal: refactor CodexNative Web into a Web-only, backend-local, event-driven runt
 
 - [x] Create isolated feature branch from `main`.
 - [x] Create this `TASK.md`.
-- [ ] Open a draft PR and use it as the execution log.
-- [ ] Inspect current remote implementation and establish integration seams.
-- [ ] Document baseline invariants and existing network/DOM/MCP responsibilities.
+- [x] Open a draft PR and use it as the execution log.
+- [x] Inspect current remote implementation and establish integration seams.
+- [x] Document baseline invariants and existing network/DOM/MCP responsibilities.
 
 ## Phase 1 — domain event model
 
@@ -197,3 +197,4 @@ Acceptance:
 ## Execution log
 
 - 2026-09-30 — Branch created. Architecture constraints and complete task plan recorded.
+- 2026-09-30 — Draft PR #1 opened. Remote baseline inspected: Playwright/CDP/MutationObserver are event sources, while the main browser orchestration still uses observation loops and distributed completion/retry decisions. Core migration seams identified.
