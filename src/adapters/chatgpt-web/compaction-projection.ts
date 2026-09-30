@@ -13,7 +13,7 @@ export class ChatGptCompactionProjection {
   private readonly buffer = new ChatGptMarkdownBuffer(markdown => markdown, 750, false);
 
   observe(segments: readonly ChatGptMarkdownSegment[]): string {
-    this.buffer.observe(segments);
+    this.buffer.observe([...segments]);
     return "";
   }
 
