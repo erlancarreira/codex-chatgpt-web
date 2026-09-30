@@ -153,6 +153,30 @@ test("submission DOM tracks logical identities and retains virtualized history i
   await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("duplicate");
 });
 
+test("fresh compaction baseline skips a full DOM scan before the first Send", async () => {
+  let evaluateCalls = 0;
+  const page = {
+    locator: () => ({}),
+    evaluate: async () => {
+      evaluateCalls += 1;
+      throw new Error("fresh baseline must not scan the DOM");
+    },
+  } as unknown as Page;
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    captureSubmissionBaseline(
+      page: Page,
+      submittedText?: string,
+      signal?: AbortSignal,
+      assumeEmpty?: boolean,
+    ): Promise<{ initialTurnIdentities: string[]; submittedText?: string; domCache: Record<string, unknown> }>;
+  };
+  const baseline = await worker.captureSubmissionBaseline(page, "Compaction prompt", undefined, true);
+  expect(evaluateCalls).toBe(0);
+  expect([...baseline.initialTurnIdentities]).toEqual([]);
+  expect(baseline.submittedText).toBe("Compaction prompt");
+  expect(baseline.domCache).toEqual({});
+});
+
 test("assistant tracking rebinds only one proven replacement after React detaches its node", () => {
   expect(chatGptReboundTurnIdentity(
     ["conversation-turn-1"],

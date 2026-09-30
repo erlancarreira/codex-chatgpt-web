@@ -1438,6 +1438,7 @@ export const browserStageTimeouts = {
   browserPage: 60_000,
   temporaryChatPreparation: 150_000,
   effortSelection: 120_000,
+  submissionBaseline: 30_000,
   promptAttachment: 60_000,
   fileAttachment: 120_000,
   send: 20_000,
@@ -3371,11 +3372,19 @@ export class ChatGptBrowserWorker {
     return (await this.responseDomSnapshot(locator, {})).visibleText;
   }
 
-  private async captureSubmissionBaseline(page: Page, submittedText?: string): Promise<ChatGptSubmissionBaseline> {
+  private async captureSubmissionBaseline(
+    page: Page,
+    submittedText?: string,
+    signal?: AbortSignal,
+    assumeEmpty = false,
+  ): Promise<ChatGptSubmissionBaseline> {
     const userTurns = page.locator(CHATGPT_USER_TURN_SELECTOR);
     const responseTurns = page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR);
     const domCache: ChatGptSubmissionDomCache = {};
-    const state = await this.submissionDomState(page, domCache);
+    if (assumeEmpty) {
+      return { userTurns, responseTurns, initialTurnIdentities: [], domCache, submittedText };
+    }
+    const state = await this.submissionDomState(page, domCache, signal);
     return {
       userTurns,
       responseTurns,
@@ -5525,6 +5534,24 @@ export class ChatGptBrowserWorker {
       let mode = await this.runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, selectStagingMode);
       await diagnostics.capture(page, "effort-selection-complete");
 
+      let freshCompactionSurfaceUnsubmitted = turn.compaction === true && !reuseConversation;
+      const captureBaseline = (submittedText: string, stage: string) => this.runStage(
+        turn.traceId,
+        stage,
+        browserStageTimeouts.submissionBaseline,
+        (stageSignal) => {
+          const signal = turn.abortSignal
+            ? AbortSignal.any([stageSignal, turn.abortSignal])
+            : stageSignal;
+          return this.captureSubmissionBaseline(
+            page,
+            submittedText,
+            signal,
+            freshCompactionSurfaceUnsubmitted,
+          );
+        },
+      );
+
       // One receipt per physical Send, not per native tool call or stream attachment.
       // The ID survives observation recovery; a new actual Send receives a new ID.
       const usageSubmission = async () => {
@@ -5563,7 +5590,7 @@ export class ChatGptBrowserWorker {
             turn.traceId, `multipart_stage_${index + 1}_effort_selection`,
             browserStageTimeouts.effortSelection, selectStagingMode,
           );
-          let stageBaseline = await this.captureSubmissionBaseline(page, stage.text);
+          let stageBaseline = await captureBaseline(stage.text, `multipart_stage_${index + 1}_baseline`);
           await this.runStage(
             turn.traceId,
             `multipart_stage_${index + 1}_attachment`,
@@ -5604,6 +5631,7 @@ export class ChatGptBrowserWorker {
                 : undefined,
             ),
           );
+          freshCompactionSurfaceUnsubmitted = false;
           console.info(
             `[chatgpt-web] browser turn ${turn.traceId} multipart part ${index + 1}/${prepared.multipart.parts.length} submission accepted evidence=${evidence}`,
           );
@@ -5673,7 +5701,7 @@ export class ChatGptBrowserWorker {
         finalPrompt = multipartFinalPrompt;
       }
 
-      let submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt);
+      let submissionBaseline = await captureBaseline(finalPrompt, "submission_baseline");
       let catalogRefreshAvailable = mode.localTools && !reuseConversation && !prepared.multipart;
       const connectorAttemptBudget: ChatGptConnectorAttemptBudget = { triggerAttempts: 0 };
       for (;;) {
@@ -5712,8 +5740,11 @@ export class ChatGptBrowserWorker {
             turn.traceId,
             "connector_catalog_refresh",
             browserStageTimeouts.temporaryChatPreparation,
-            async () => {
-              await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+            async (stageSignal) => {
+              const refreshSignal = turn.abortSignal
+                ? AbortSignal.any([stageSignal, turn.abortSignal])
+                : stageSignal;
+              await withBrowserTurnAbort(page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }), refreshSignal);
               await this.prepareChatSurface(
                 page,
                 checkpoint => diagnostics.capture(page, checkpoint),
@@ -5728,7 +5759,13 @@ export class ChatGptBrowserWorker {
                 trackUsage,
                 turn.modelFamily,
               );
-              submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt);
+              freshCompactionSurfaceUnsubmitted = turn.compaction === true;
+              submissionBaseline = await this.captureSubmissionBaseline(
+                page,
+                finalPrompt,
+                refreshSignal,
+                freshCompactionSurfaceUnsubmitted,
+              );
             },
           );
           await diagnostics.capture(page, "connector-catalog-refreshed");
