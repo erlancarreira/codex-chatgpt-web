@@ -213,3 +213,5 @@ Acceptance:
 
 - 2026-09-30 — Woodpecker repository enabled by owner; branch push used to trigger the first CI validation for this refactor.
 - 2026-09-30 — First Woodpecker gate: install/contracts/event-core passed; browser-contracts failed only because two real helper-process IPC tests exceeded Bun's 5s timeout while running concurrently with the heavy browser contract suite. CI was restructured to run helper IPC contracts in an isolated step without weakening assertions or extending the test timeout.
+
+- 2026-09-30 — First Woodpecker PR run reached browser-contracts: 159 tests passed and 2 real-helper integration tests exceeded Bun's default 5s test timeout in CI. Production timeouts were unchanged; only those subprocess integration tests received an explicit 15s test budget.
