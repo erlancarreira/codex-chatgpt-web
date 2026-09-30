@@ -5886,6 +5886,7 @@ export class ChatGptBrowserWorker {
               ),
             );
             if (rebound.identity !== responseTurn.identity) {
+              if (turn.compaction) markdownBuffer.remount();
               responseTurn = rebound;
               responseDomCache.key = undefined;
               responseDomCache.snapshot = undefined;
@@ -5911,6 +5912,7 @@ export class ChatGptBrowserWorker {
             );
             page = recovered.page;
             submissionBaseline = recovered.baseline;
+            if (turn.compaction) markdownBuffer.remount();
             responseTurn = {
               ...responseTurn,
               locator: page.locator(chatGptAssistantTurnSelector(responseTurn.identity)),
