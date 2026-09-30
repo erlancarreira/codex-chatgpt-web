@@ -111,6 +111,7 @@ import {
   type ChatGptWebTransportSnapshot,
 } from "./transport-tracker";
 import { decideMissingAssistant } from "./turn-lifecycle-policy";
+import { ChatGptDomLifecycleAdapter } from "./dom-lifecycle-adapter";
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
@@ -5814,8 +5815,7 @@ export class ChatGptBrowserWorker {
       let internalObservationFaults = 0;
       let observedThisIteration = false;
       let completionFenceRevision: number | undefined;
-      let lifecycleDomRevision = 0;
-      let lifecycleDomKey: string | undefined;
+      const domLifecycle = new ChatGptDomLifecycleAdapter(turn.lifecycle);
       for (;;) {
         // The heartbeat is a consumer callback, so it stays outside the observation-fault region:
         // a defect in the caller must not be retried as though the page could not be read.
@@ -5898,15 +5898,12 @@ export class ChatGptBrowserWorker {
             continue;
           }
         }
-        if (turn.lifecycle && responseDomCache.key && lifecycleDomKey !== responseDomCache.key) {
-          lifecycleDomKey = responseDomCache.key;
-          lifecycleDomRevision += 1;
-          await turn.lifecycle.dispatch("dom", {
-            type: "dom_revision",
-            at: Date.now(),
-            revision: lifecycleDomRevision,
-          });
-        }
+        await domLifecycle.observe({
+          at: Date.now(),
+          ...(responseDomCache.key ? { observerKey: responseDomCache.key } : {}),
+          responsePresent: snapshot.responsePresent,
+          identity: responseTurn.identity,
+        });
         if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
         if (snapshot.responsePresent) consecutiveObservationRebinds = 0;
         // The page was read successfully, so the fault budget is genuinely consecutive even when
