@@ -860,6 +860,7 @@ export class ChatGptSubmissionRejectionObserver {
   private lifecycle?: TurnLifecycleSink;
   private lifecycleFailure?: ChatGptWebAdapterError;
   private readonly lifecycleDispatches = new Set<Promise<void>>();
+  private readonly lifecycleDataPublished = new Set<string>();
 
   private recordTransport(observation: TransportObservation): void {
     if (!this.transport.record(observation) || !this.lifecycle) return;
@@ -884,7 +885,9 @@ export class ChatGptSubmissionRejectionObserver {
     } else if (observation.type === "data_received"
       && snapshot.responseStatus !== undefined
       && snapshot.responseStatus >= 200
-      && snapshot.responseStatus < 400) {
+      && snapshot.responseStatus < 400
+      && !this.lifecycleDataPublished.has(observation.requestId)) {
+      this.lifecycleDataPublished.add(observation.requestId);
       event = {
         type: "transport_data",
         at: observation.at,
@@ -1091,6 +1094,7 @@ export class ChatGptSubmissionRejectionObserver {
     this.transport.reset();
     this.lifecycle = lifecycle;
     this.lifecycleFailure = undefined;
+    this.lifecycleDataPublished.clear();
     this.page = page;
     const context = typeof page.context === "function" ? page.context() : undefined;
     if (context && typeof context.on === "function") {
