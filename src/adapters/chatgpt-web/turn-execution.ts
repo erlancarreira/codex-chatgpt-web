@@ -10,6 +10,7 @@ import {
 } from "./environment";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import type { ChatGptExternalTurnProgress } from "./turn-progress";
+import type { TurnLifecycleSink } from "../../ports/turn-lifecycle";
 
 function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
@@ -151,6 +152,8 @@ interface ChatGptTurnRuntimeBase {
   /** Idempotently retire the turn-bound MCP capability after browser and observer settlement. */
   retireCapability?: () => void | Promise<void>;
   submission?: { phase: "prepared" | "send_activated" | "accepted" };
+  /** Automatic Web lifecycle; Zero Risk keeps its separate manual control contract. */
+  lifecycle?: TurnLifecycleSink;
   /** Present only when the visible ChatGPT tab is driven manually through the Codex Zero Risk MCP contract. */
   manualControl?: { surfaceNonce: string };
   cancel: (reason?: Error) => void;
