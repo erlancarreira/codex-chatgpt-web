@@ -2968,21 +2968,32 @@ test("submission network observer tracks backend stream activity independently o
     streamActive: false,
   });
 
-  session.emit("Network.requestWillBeSent", {
+  const failureSession = Object.assign(new EventEmitter(), {
+    send: async () => ({}),
+    detach: async () => {},
+  });
+  const failurePage = Object.assign(new EventEmitter(), {
+    mainFrame: () => frame,
+    context: () => ({ newCDPSession: async () => failureSession }),
+  });
+  const failureObserver = new ChatGptSubmissionRejectionObserver();
+  await failureObserver.begin(failurePage as unknown as Page);
+  failureSession.emit("Network.requestWillBeSent", {
     requestId: "request-real-failure",
     request: { method: "POST", url: "https://chatgpt.com/backend-api/f/conversation" },
   });
-  session.emit("Network.loadingFailed", {
+  failureSession.emit("Network.loadingFailed", {
     requestId: "request-real-failure",
     errorText: "net::ERR_CONNECTION_RESET",
     canceled: false,
   });
-  expect(observer.networkSnapshot()).toMatchObject({
+  expect(failureObserver.networkSnapshot()).toMatchObject({
     completed: false,
     failed: true,
     failureText: "net::ERR_CONNECTION_RESET",
     abortedAfterResponse: false,
   });
+  failureObserver.dispose();
   observer.dispose();
 });
 
