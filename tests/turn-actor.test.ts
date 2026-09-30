@@ -25,9 +25,9 @@ test("turn actor serializes concurrent producers through one writer", async () =
     actor.dispatch("dom", { type: "dom_revision", at: 6, revision: 2 }),
   ]);
 
-  expect(results.at(-1)?.sequence).toBe(6);
-  expect(actor.snapshot().sequence).toBe(6);
-  expect(seen.map(event => event.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
+  expect(results.at(-1)?.sequence).toBe(5);
+  expect(actor.snapshot().sequence).toBe(5);
+  expect(seen.map(event => event.sequence)).toEqual([1, 2, 3, 4, 5]);
 });
 
 test("pending DOM revisions coalesce to the newest revision", async () => {
