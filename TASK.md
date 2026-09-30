@@ -126,12 +126,12 @@ Acceptance:
 
 ## Phase 8 — MCP/tool lifecycle integration
 
-- [ ] Model tool requested/started/completed/failed events.
-- [ ] Keep tool runtime behind a port.
-- [ ] Make WAITING_TOOL / TOOL_RUNNING transitions explicit.
-- [ ] Preserve Codex approvals/sandbox behavior.
-- [ ] Ensure tunnel reconnect cannot mutate an unrelated turn.
-- [ ] Add tool timeout/cancel/reconnect tests.
+- [x] Model tool requested/started/completed/failed events.
+- [x] Keep tool runtime behind a port.
+- [x] Make WAITING_TOOL / TOOL_RUNNING transitions explicit.
+- [x] Preserve Codex approvals/sandbox behavior.
+- [x] Ensure tunnel reconnect cannot mutate an unrelated turn.
+- [x] Add tool timeout/cancel/reconnect tests.
 
 ## Phase 9 — supervisors and resilience
 
@@ -203,3 +203,4 @@ Acceptance:
 - 2026-09-30 — Phase 5 completed: MutationObserver-backed DOM snapshots now flow through a typed lifecycle adapter with monotonic revisions; surface loss/remount are non-terminal observations and network-active turns remain alive.
 - 2026-09-30 — Phase 6 completed: browser observation/rebind retries now use named bounded Core recovery budgets; historical failure semantics are locked in a dedicated regression suite.
 - 2026-09-30 — Phase 7 completed: structured compaction now has its own application coordinator/state journal; provisional Markdown is never streamed, remount resets only provisional compaction projection, and existing retained-compaction retry/cancel coverage plus new remount tests lock the behavior.
+- 2026-09-30 — Phase 8 completed: MCP execution is behind a ToolRuntimePort, per-turn tool transitions are centralized, same-batch reconnect is idempotent, foreign/late tool events fail closed, and existing Codex approval/sandbox behavior remains in the broker boundary.
