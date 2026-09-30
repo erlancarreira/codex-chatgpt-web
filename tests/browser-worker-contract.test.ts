@@ -2867,7 +2867,7 @@ test("only a size rejection of the current owned browser submission is non-retry
   };
   const old = makeRequest();
   page.emit("request", old);
-  observer.begin(page as unknown as Page);
+  await observer.begin(page as unknown as Page);
   respond(old);
   for (const request of [makeRequest("https://other.example/backend-api/f/conversation"),
     makeRequest("https://chatgpt.com/backend-api/sentinel"), makeRequest(undefined, {})]) {
@@ -2881,13 +2881,98 @@ test("only a size rejection of the current owned browser submission is non-retry
   expect(await observer.failure()).toMatchObject({
     status: 400, code: "context_length_exceeded", errorType: "invalid_request_error", retryable: false,
   });
-  observer.begin(page as unknown as Page);
+  await observer.begin(page as unknown as Page);
   expect(await observer.failure()).toBeUndefined();
   respond(current);
   expect(await observer.failure()).toBeUndefined();
   observer.dispose();
   expect(page.listenerCount("request")).toBe(0);
   expect(page.listenerCount("response")).toBe(0);
+});
+
+test("submission network observer tracks backend stream activity independently of the DOM", async () => {
+  const frame = {};
+  const session = Object.assign(new EventEmitter(), {
+    send: async (method: string) => method === "Network.streamResourceContent"
+      ? { bufferedData: "" }
+      : {},
+    detach: async () => {},
+  });
+  const page = Object.assign(new EventEmitter(), {
+    mainFrame: () => frame,
+    context: () => ({ newCDPSession: async () => session }),
+  });
+  const observer = new ChatGptSubmissionRejectionObserver();
+  await observer.begin(page as unknown as Page);
+  expect(observer.networkSnapshot()).toMatchObject({ cdpAttached: true, requestSeen: false });
+
+  session.emit("Network.requestWillBeSent", {
+    requestId: "request-1",
+    request: { method: "POST", url: "https://chatgpt.com/backend-api/f/conversation" },
+  });
+  session.emit("Network.responseReceived", {
+    requestId: "request-1",
+    response: { status: 200 },
+  });
+  session.emit("Network.dataReceived", {
+    requestId: "request-1",
+    dataLength: 128,
+    encodedDataLength: 128,
+    data: "",
+  });
+  expect(observer.networkSnapshot()).toMatchObject({
+    requestSeen: true,
+    responseSeen: true,
+    responseStatus: 200,
+    streamActive: true,
+    completed: false,
+    failed: false,
+    dataChunks: 1,
+    dataBytes: 128,
+  });
+  expect(observer.networkIsLive(Date.now(), 1_000)).toBe(true);
+
+  session.emit("Network.loadingFinished", { requestId: "request-1", encodedDataLength: 128 });
+  expect(observer.networkSnapshot()).toMatchObject({
+    streamActive: false,
+    completed: true,
+    failed: false,
+  });
+  expect(observer.networkIsLive(Date.now(), 1_000)).toBe(false);
+  observer.dispose();
+});
+
+
+test("submission network observer sees service-worker conversation traffic from browser context", async () => {
+  const frame = {};
+  const context = Object.assign(new EventEmitter(), {
+    newCDPSession: async () => { throw new Error("CDP unavailable in service-worker fixture"); },
+  });
+  const page = Object.assign(new EventEmitter(), {
+    mainFrame: () => frame,
+    context: () => context,
+  });
+  const observer = new ChatGptSubmissionRejectionObserver();
+  await observer.begin(page as unknown as Page);
+  const request = {
+    method: () => "POST",
+    url: () => "https://chatgpt.com/backend-api/conversation",
+    serviceWorker: () => ({}),
+    frame: () => { throw new Error("Service-worker requests have no frame"); },
+    failure: () => null,
+  };
+  context.emit("request", request);
+  context.emit("response", {
+    request: () => request,
+    status: () => 200,
+    headers: () => ({ "content-type": "text/event-stream" }),
+  });
+  context.emit("requestfinished", request);
+  expect(observer.networkSnapshot()).toMatchObject({
+    requestSeen: true, responseSeen: true, responseStatus: 200, completed: true, failed: false,
+  });
+  observer.dispose();
+  expect(context.listenerCount("request")).toBe(0);
 });
 
 test("effort readback rejects a changed selection or surface before activating Send", async () => {
