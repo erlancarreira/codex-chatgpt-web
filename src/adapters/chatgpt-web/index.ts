@@ -49,7 +49,7 @@ import {
   chatGptConversationKey,
   retainedConversationResumeRequest,
 } from "./conversation-key";
-import { WebTurnLifecycleCoordinator } from "../../application/web-turn-lifecycle-coordinator";
+import { WebTurnSupervisor } from "../../application/web-turn-supervisor";
 import { WebTurnToolLifecycle } from "../../application/web-turn-tool-lifecycle";
 import { ChatGptBrokerToolRuntime } from "./broker-tool-runtime";
 
@@ -347,6 +347,7 @@ export function createChatGptWebAdapter(
   } = {},
 ): ProviderAdapter {
   const worker = ChatGptBrowserWorker.forProvider(provider);
+  const turnSupervisor = new WebTurnSupervisor();
   const broker = dependencies.broker ?? TurnBroker.forSocket(brokerSocketPath(provider));
   const zeroRiskManualControl = dependencies.zeroRiskManualControl ?? launcherZeroRiskManualControl;
   const structuredBroker = broker instanceof TurnBroker ? broker : undefined;
@@ -421,7 +422,7 @@ export function createChatGptWebAdapter(
           : "The Zero Risk Web model route requires ChatGPT Zero Risk interaction mode",
       );
     }
-    const lifecycle = manualRequest ? undefined : new WebTurnLifecycleCoordinator();
+    const lifecycle = manualRequest ? undefined : turnSupervisor.acquire(traceId);
     const mode = manualRequest
       ? { localTools: true }
       : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
@@ -485,6 +486,7 @@ export function createChatGptWebAdapter(
     let browserOwnerSettled = false;
     const trackBrowserOwner = (browser: Promise<string>): Promise<string> => browser.finally(() => {
       browserOwnerSettled = true;
+      if (lifecycle) turnSupervisor.release(traceId, lifecycle);
     });
     const trace = new ChatGptTraceFeed();
     const text = new ChatGptTextFeed();
