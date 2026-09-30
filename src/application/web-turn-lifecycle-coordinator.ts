@@ -1,4 +1,5 @@
 import { TurnActor } from "../core/turn/turn-actor";
+import { redactTurnDiagnosticText } from "../core/observability/redaction";
 import type {
   SequencedTurnEvent,
   TurnEvent,
@@ -94,13 +95,27 @@ export class WebTurnLifecycleCoordinator implements TurnLifecycleInspector, Turn
 
   diagnosticSnapshot(): TurnLifecycleDiagnosticSnapshot {
     const state = this.snapshot();
+    const terminal = state.terminal
+      ? {
+        ...state.terminal,
+        ...(state.terminal.reason ? { reason: redactTurnDiagnosticText(state.terminal.reason) } : {}),
+      }
+      : undefined;
+    const lastTransportFailure = state.lastTransportFailure
+      ? {
+        ...state.lastTransportFailure,
+        reason: redactTurnDiagnosticText(state.lastTransportFailure.reason),
+      }
+      : undefined;
     return {
       state: {
         ...state,
         activeToolCalls: [...state.activeToolCalls],
         startedToolCalls: [...state.startedToolCalls],
+        ...(terminal ? { terminal } : {}),
+        ...(lastTransportFailure ? { lastTransportFailure } : {}),
       },
-      ...(state.terminal ? { terminal: { ...state.terminal } } : {}),
+      ...(terminal ? { terminal } : {}),
       events: this.traceEvents(),
     };
   }
