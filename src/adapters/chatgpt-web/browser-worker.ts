@@ -113,27 +113,28 @@ import {
 import { decideMissingAssistant } from "./turn-lifecycle-policy";
 import { ChatGptDomLifecycleAdapter } from "./dom-lifecycle-adapter";
 import { BoundedRecoveryBudget, RecoveryBudgetExceededError } from "../../core/resilience/recovery-budget";
+import { BrowserSupervisor } from "../../application/browser-supervisor";
+import { defineTimingPolicy } from "../../core/resilience/timing-policy";
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
-const workers = new Map<string, ChatGptBrowserWorker>();
+const browserSupervisor = new BrowserSupervisor<ChatGptBrowserWorker>();
 
 export async function closeChatGptBrowserWorkers(): Promise<void> {
-  const active = [...workers.values()];
-  workers.clear();
-  const results = await Promise.allSettled(active.map(worker => worker.close()));
-  const failures = results
-    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-    .map(result => result.reason);
-  if (failures.length > 0) {
-    throw new AggregateError(failures, `${failures.length} ChatGPT browser worker(s) failed to close`);
-  }
+  await browserSupervisor.closeAll();
 }
 
-export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
-export const CHATGPT_NETWORK_DOM_SETTLE_MS = 5_000;
-export const CHATGPT_ABORTED_STREAM_DOM_SETTLE_MS = 20_000;
-export const CHATGPT_EVENT_WATCHDOG_MS = 5_000;
+export const CHATGPT_WEB_TIMING_POLICIES = Object.freeze({
+  responseDomGrace: defineTimingPolicy("response-dom-grace", "deadline", 60_000),
+  networkDomSettle: defineTimingPolicy("network-dom-settle", "settle", 5_000),
+  abortedStreamDomSettle: defineTimingPolicy("aborted-stream-dom-settle", "settle", 20_000),
+  eventWakeWatchdog: defineTimingPolicy("event-wake-watchdog", "watchdog", 5_000),
+  browserObservationProbe: defineTimingPolicy("browser-observation-probe", "watchdog", 15_000),
+});
+export const CHATGPT_RESPONSE_DOM_GRACE_MS = CHATGPT_WEB_TIMING_POLICIES.responseDomGrace.timeoutMs;
+export const CHATGPT_NETWORK_DOM_SETTLE_MS = CHATGPT_WEB_TIMING_POLICIES.networkDomSettle.timeoutMs;
+export const CHATGPT_ABORTED_STREAM_DOM_SETTLE_MS = CHATGPT_WEB_TIMING_POLICIES.abortedStreamDomSettle.timeoutMs;
+export const CHATGPT_EVENT_WATCHDOG_MS = CHATGPT_WEB_TIMING_POLICIES.eventWakeWatchdog.timeoutMs;
 /**
  * How long a staged Bigger Context part may take to produce its assistant turn. A staged part is two
  * orders of magnitude larger than an ordinary prompt and ChatGPT reads all of it before answering.
@@ -1497,7 +1498,7 @@ export function remainingStageBudgetMs(
   return Math.max(250, timeoutMs - awakeMs);
 }
 
-export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 15_000;
+export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = CHATGPT_WEB_TIMING_POLICIES.browserObservationProbe.timeoutMs;
 export const MAX_CHATGPT_BROWSER_PAGE_REBINDS = 2;
 
 export class ChatGptBrowserObservationTimeoutError extends Error {
@@ -2570,12 +2571,7 @@ export class ChatGptBrowserWorker {
   static forProvider(provider: CodexProviderConfig): ChatGptBrowserWorker {
     const config = resolveBrowserConfig(provider);
     const key = JSON.stringify(config);
-    let worker = workers.get(key);
-    if (!worker) {
-      worker = new ChatGptBrowserWorker(config);
-      workers.set(key, worker);
-    }
-    return worker;
+    return browserSupervisor.acquire(key, () => new ChatGptBrowserWorker(config));
   }
 
   private browser?: Browser;
