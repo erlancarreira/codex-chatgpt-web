@@ -127,6 +127,7 @@ export async function closeChatGptBrowserWorkers(): Promise<void> {
 export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
 export const CHATGPT_NETWORK_DOM_SETTLE_MS = 5_000;
 export const CHATGPT_ABORTED_STREAM_DOM_SETTLE_MS = 20_000;
+export const CHATGPT_EVENT_WATCHDOG_MS = 5_000;
 /**
  * How long a staged Bigger Context part may take to produce its assistant turn. A staged part is two
  * orders of magnitude larger than an ordinary prompt and ChatGPT reads all of it before answering.
@@ -1056,6 +1057,17 @@ export class ChatGptSubmissionRejectionObserver {
 
   networkSnapshot(): ChatGptSubmissionNetworkSnapshot {
     return this.transport.networkSnapshot();
+  }
+
+  networkRevision(): number {
+    return this.transport.revision();
+  }
+
+  waitForNetworkChange(
+    afterRevision: number,
+    signal?: AbortSignal,
+  ): Promise<ChatGptSubmissionNetworkSnapshot> {
+    return this.transport.waitForChange(afterRevision, signal);
   }
 
   networkIsLive(now = Date.now(), graceMs = CHATGPT_RESPONSE_DOM_GRACE_MS): boolean {
@@ -3010,7 +3022,10 @@ export class ChatGptBrowserWorker {
     return composer;
   }
 
-  private async waitForTurnDomMutation(page: Page, timeoutMs = 50): Promise<void> {
+  private async waitForTurnDomMutation(
+    page: Page,
+    timeoutMs = CHATGPT_EVENT_WATCHDOG_MS,
+  ): Promise<void> {
     await page.evaluate(({ timeout, attributeFilter }) => new Promise<void>(resolveMutation => {
       let settled = false;
       let settleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -3034,6 +3049,7 @@ export class ChatGptBrowserWorker {
         attributes: true,
         attributeFilter,
       });
+      // This timeout is a watchdog for a lost observer/listener, not the normal observation clock.
       const timeoutTimer = setTimeout(finish, timeout);
     }), { timeout: timeoutMs, attributeFilter: [...CHATGPT_DOM_REVISION_ATTRIBUTES] });
   }
@@ -3043,23 +3059,24 @@ export class ChatGptBrowserWorker {
     afterProgressRevision: number,
     externalProgress?: ChatGptTurnProgressReader,
     signal?: AbortSignal,
+    networkProgress?: ChatGptSubmissionRejectionObserver,
+    afterNetworkRevision = networkProgress?.networkRevision() ?? 0,
   ): Promise<void> {
-    const domMutation = this.waitForTurnDomMutation(page);
-    if (!externalProgress) {
-      await withBrowserTurnAbort(domMutation, signal);
-      return;
+    const waitAbort = new AbortController();
+    const waitSignal = signal
+      ? AbortSignal.any([waitAbort.signal, signal])
+      : waitAbort.signal;
+    const waits: Array<Promise<void>> = [this.waitForTurnDomMutation(page)];
+    if (externalProgress) {
+      waits.push(externalProgress.waitForChange(afterProgressRevision, waitSignal).then(() => undefined));
     }
-    const progressWaitAbort = new AbortController();
-    const progressSignal = signal
-      ? AbortSignal.any([progressWaitAbort.signal, signal])
-      : progressWaitAbort.signal;
+    if (networkProgress) {
+      waits.push(networkProgress.waitForNetworkChange(afterNetworkRevision, waitSignal).then(() => undefined));
+    }
     try {
-      await withBrowserTurnAbort(Promise.race([
-        domMutation,
-        externalProgress.waitForChange(afterProgressRevision, progressSignal).then(() => undefined),
-      ]), signal);
+      await withBrowserTurnAbort(Promise.race(waits), signal);
     } finally {
-      progressWaitAbort.abort();
+      waitAbort.abort();
     }
   }
 
@@ -3350,6 +3367,8 @@ export class ChatGptBrowserWorker {
           latestProgress?.revision ?? 0,
           externalProgress,
           signal,
+          networkProgress,
+          networkAtLoopStart?.revision ?? 0,
         );
         continue;
       }
@@ -3446,6 +3465,8 @@ export class ChatGptBrowserWorker {
         progress?.revision ?? 0,
         externalProgress,
         signal,
+        networkProgress,
+        networkAtLoopStart?.revision ?? 0,
       );
     }
   }
@@ -4142,7 +4163,12 @@ export class ChatGptBrowserWorker {
         // Proven MCP activity outranks a momentarily unavailable staging DOM, exactly as it does
         // in the main turn loop.
         domHealthTracker.clearMissingResponse();
-        await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+        await this.waitForTurnDomOrExternalProgress(
+          page,
+          externalProgressSnapshot?.revision ?? 0,
+          externalProgress,
+          abortSignal,
+        );
         continue;
       }
       const running = await page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last().isVisible().catch(() => false);
@@ -5712,6 +5738,7 @@ export class ChatGptBrowserWorker {
         }
        try {
         observedThisIteration = false;
+        const networkRevisionAtLoopStart = submissionRejection.networkRevision();
         if (page.isClosed()) {
           throw chatGptBrowserTabClosedError();
         }
@@ -5735,7 +5762,8 @@ export class ChatGptBrowserWorker {
           () => diagnostics.capture(page, "tool-confirmation-visible"),
         )) {
           internalObservationFaults = 0;
-          await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+          responseDomCache.key = undefined;
+          responseDomCache.snapshot = undefined;
           continue;
         }
 
@@ -5816,7 +5844,14 @@ export class ChatGptBrowserWorker {
           // executing even if its renderer temporarily cannot expose the response subtree.
           // DOM remains authoritative for rendered text and completion.
           domHealthTracker.clearMissingResponse();
-          await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+          await this.waitForTurnDomOrExternalProgress(
+            page,
+            externalProgressSnapshot?.revision ?? 0,
+            turn.externalProgress,
+            turn.abortSignal,
+            submissionRejection,
+            networkRevisionAtLoopStart,
+          );
           continue;
         }
         const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
@@ -5861,7 +5896,14 @@ export class ChatGptBrowserWorker {
               if (completionFenceRevision === undefined) {
                 const revision = await turn.completionFence.begin();
                 if (revision === undefined) {
-                  await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+                  await this.waitForTurnDomOrExternalProgress(
+                    page,
+                    externalProgressSnapshot?.revision ?? 0,
+                    turn.externalProgress,
+                    turn.abortSignal,
+                    submissionRejection,
+                    networkRevisionAtLoopStart,
+                  );
                   continue;
                 }
                 completionFenceRevision = revision;
@@ -5870,14 +5912,12 @@ export class ChatGptBrowserWorker {
                 // stale cached completion and the broker's terminal decision.
                 responseDomCache.key = undefined;
                 responseDomCache.snapshot = undefined;
-                await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
                 continue;
               }
               if (!await turn.completionFence.commit(completionFenceRevision)) {
                 completionFenceRevision = undefined;
                 responseDomCache.key = undefined;
                 responseDomCache.snapshot = undefined;
-                await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
                 continue;
               }
             }
@@ -5931,7 +5971,14 @@ export class ChatGptBrowserWorker {
           });
           if (domError) throw new Error(domError);
         }
-        await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+        await this.waitForTurnDomOrExternalProgress(
+          page,
+          externalProgressSnapshot?.revision ?? 0,
+          turn.externalProgress,
+          turn.abortSignal,
+          submissionRejection,
+          networkRevisionAtLoopStart,
+        );
        } catch (error) {
         // Only a defect in this worker is retried here. Every deliberate signal — adapter errors,
         // aborts, closed tabs, DOM-health verdicts — still fails the turn immediately.
@@ -5953,7 +6000,6 @@ export class ChatGptBrowserWorker {
         await diagnostics.capture(page, "internal-observation-fault");
         responseDomCache.key = undefined;
         responseDomCache.snapshot = undefined;
-        await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
        }
       }
 
