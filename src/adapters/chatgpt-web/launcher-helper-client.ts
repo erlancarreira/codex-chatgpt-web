@@ -10,6 +10,8 @@ import {
   parseChatGptLunaCheckpoint,
   type ChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
+import { parseTurnLifecycleWireEvent } from "./turn-lifecycle-protocol";
+import type { SequencedTurnEvent, TurnEvent } from "../../core/turn/turn-state-machine";
 
 interface PendingTurn {
   turn: BrowserTurn;
@@ -27,6 +29,7 @@ type HelperMessage =
   | { type: "ready"; features?: string[] }
   | { type: "event"; id: string; event: "heartbeat" | "send_activated" | "submitted" | "reasoning" | "commentary" | "text"; text?: string; continuation?: boolean }
   | { type: "event"; id: string; event: "tool_batch_observed"; revision: number }
+  | { type: "event"; id: string; event: "lifecycle"; requestId: number; source: SequencedTurnEvent["source"]; payload: TurnEvent }
   | { type: "event"; id: string; event: "multipart_stage_acknowledged"; stageIndex: number }
   | { type: "event"; id: string; event: "completion_fence_begin"; requestId: number }
   | { type: "event"; id: string; event: "completion_fence_commit"; requestId: number; revision: number }
@@ -63,6 +66,23 @@ function parseHelperMessage(line: string): HelperMessage {
   }
   if (message.type === "event") {
     const event = message.event;
+    if (event === "lifecycle") {
+      if (!Number.isSafeInteger(message.requestId) || (message.requestId as number) <= 0) {
+        throw new Error("Launcher browser helper lifecycle request id is invalid");
+      }
+      const parsed = parseTurnLifecycleWireEvent({
+        source: message.source,
+        event: message.payload,
+      });
+      return {
+        type: "event",
+        id: message.id,
+        event,
+        requestId: message.requestId as number,
+        source: parsed.source,
+        payload: parsed.event,
+      };
+    }
     if (event === "multipart_stage_acknowledged") {
       if (!Number.isSafeInteger(message.stageIndex) || (message.stageIndex as number) <= 0) {
         throw new Error("Launcher browser helper multipart stage index is invalid");
@@ -227,6 +247,11 @@ export class LauncherBrowserHelperClient {
         "Launcher browser helper does not support the MCP completion fence; update or restart the launcher",
       );
     }
+    if (turn.lifecycle && !this.helperFeatures.has("turn-lifecycle-events")) {
+      throw new Error(
+        "Launcher browser helper does not support turn lifecycle events; update or restart the launcher",
+      );
+    }
     return await new Promise<string>((resolveResult, rejectResult) => {
         if (this.pending.has(turn.traceId)) {
           rejectResult(new Error(`Duplicate launcher browser turn: ${turn.traceId}`));
@@ -293,6 +318,7 @@ export class LauncherBrowserHelperClient {
             ...(turn.compaction ? { compaction: true } : {}),
             ...(turn.captureLunaCheckpoint ? { captureLunaCheckpoint: true } : {}),
             ...(turn.externalProgress ? { externalProgress: true } : {}),
+            ...(turn.lifecycle ? { lifecycle: true } : {}),
           },
         })
           // Only mirror once the run frame is on the wire, so the helper never sees progress for a
@@ -416,6 +442,30 @@ export class LauncherBrowserHelperClient {
     if (!pending) return;
     if (message.type === "event") {
       if (message.event === "heartbeat") pending.turn.onHeartbeat?.();
+      else if (message.event === "lifecycle") {
+        const lifecycle = pending.turn.lifecycle;
+        if (!lifecycle) {
+          this.abortWithLocalFailure(
+            message.id,
+            new Error("Launcher browser helper emitted lifecycle data for a turn without a lifecycle sink"),
+            pending,
+          );
+          return;
+        }
+        void lifecycle.dispatch(message.source, message.payload).then(state => {
+          if (this.pending.get(message.id) !== pending || pending.localFailure || pending.turn.abortSignal?.aborted) return;
+          return this.send({
+            type: "lifecycle_ack",
+            id: message.id,
+            requestId: message.requestId,
+            state,
+          });
+        }).catch(error => this.abortWithLocalFailure(
+          message.id,
+          error instanceof Error ? error : new Error(String(error)),
+          pending,
+        ));
+      }
       else if (message.event === "tool_batch_observed") {
         const progress = pending.turn.externalProgress;
         if (!progress) {
