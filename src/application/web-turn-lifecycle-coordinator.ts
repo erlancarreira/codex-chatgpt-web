@@ -5,14 +5,18 @@ import type {
   TurnState,
 } from "../core/turn/turn-state-machine";
 import type {
+  TurnLifecycleDiagnosticSnapshot,
   TurnLifecycleInspector,
   TurnLifecycleJournalReader,
+  TurnLifecycleTraceRecord,
 } from "../ports/turn-lifecycle";
 
 export interface WebTurnLifecycleCoordinatorOptions {
   maxQueueSize?: number;
   maxJournalEvents?: number;
   now?: () => number;
+  traceId?: string;
+  turnId?: string;
 }
 
 /**
@@ -26,6 +30,8 @@ export class WebTurnLifecycleCoordinator implements TurnLifecycleInspector, Turn
   private readonly journal: SequencedTurnEvent[] = [];
   private readonly maxJournalEvents: number;
   private readonly now: () => number;
+  private readonly traceId?: string;
+  private readonly turnId?: string;
   private readonly prepared: Promise<TurnState>;
 
   constructor(options: WebTurnLifecycleCoordinatorOptions = {}) {
@@ -34,6 +40,8 @@ export class WebTurnLifecycleCoordinator implements TurnLifecycleInspector, Turn
       throw new Error("Turn lifecycle journal capacity must be a safe integer >= 32");
     }
     this.now = options.now ?? Date.now;
+    this.traceId = options.traceId?.trim() || undefined;
+    this.turnId = options.turnId?.trim() || undefined;
     this.actor = new TurnActor({
       ...(options.maxQueueSize !== undefined ? { maxQueueSize: options.maxQueueSize } : {}),
       onTransition: (_state, event) => {
@@ -64,6 +72,37 @@ export class WebTurnLifecycleCoordinator implements TurnLifecycleInspector, Turn
       ...event,
       event: { ...event.event } as TurnEvent,
     }));
+  }
+
+  traceEvents(): readonly TurnLifecycleTraceRecord[] {
+    return this.journal.map(entry => {
+      const event = entry.event;
+      const requestId = "requestId" in event && typeof event.requestId === "string"
+        ? event.requestId
+        : undefined;
+      return {
+        ...(this.traceId ? { traceId: this.traceId } : {}),
+        ...(this.turnId ? { turnId: this.turnId } : {}),
+        ...(requestId ? { requestId } : {}),
+        source: entry.source,
+        sequence: entry.sequence,
+        timestamp: event.at,
+        type: event.type,
+      };
+    });
+  }
+
+  diagnosticSnapshot(): TurnLifecycleDiagnosticSnapshot {
+    const state = this.snapshot();
+    return {
+      state: {
+        ...state,
+        activeToolCalls: [...state.activeToolCalls],
+        startedToolCalls: [...state.startedToolCalls],
+      },
+      ...(state.terminal ? { terminal: { ...state.terminal } } : {}),
+      events: this.traceEvents(),
+    };
   }
 
   submissionSent(at = this.now()): Promise<TurnState> {
