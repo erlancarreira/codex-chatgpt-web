@@ -135,12 +135,12 @@ Acceptance:
 
 ## Phase 9 — supervisors and resilience
 
-- [ ] Add Turn Supervisor boundary.
-- [ ] Add Browser Supervisor boundary.
-- [ ] Preserve Runtime/Tunnel supervisor ownership rules.
-- [ ] Add named deadline/watchdog policies.
-- [ ] Remove migrated magic timeout values from orchestration paths.
-- [ ] Ensure one turn/browser fault does not corrupt unrelated turns.
+- [x] Add Turn Supervisor boundary.
+- [x] Add Browser Supervisor boundary.
+- [x] Preserve Runtime/Tunnel supervisor ownership rules.
+- [x] Add named deadline/watchdog policies.
+- [x] Remove migrated magic timeout values from orchestration paths.
+- [x] Ensure one turn/browser fault does not corrupt unrelated turns.
 
 ## Phase 10 — integration into existing adapter
 
@@ -204,3 +204,4 @@ Acceptance:
 - 2026-09-30 — Phase 6 completed: browser observation/rebind retries now use named bounded Core recovery budgets; historical failure semantics are locked in a dedicated regression suite.
 - 2026-09-30 — Phase 7 completed: structured compaction now has its own application coordinator/state journal; provisional Markdown is never streamed, remount resets only provisional compaction projection, and existing retained-compaction retry/cancel coverage plus new remount tests lock the behavior.
 - 2026-09-30 — Phase 8 completed: MCP execution is behind a ToolRuntimePort, per-turn tool transitions are centralized, same-batch reconnect is idempotent, foreign/late tool events fail closed, and existing Codex approval/sandbox behavior remains in the broker boundary.
+- 2026-09-30 — Phase 9 completed: automatic Web turns and browser workers now have explicit supervisors; Runtime/Tunnel ownership remains unchanged; lifecycle timing uses named deadline/settle/watchdog policies and supervisor tests prove turn isolation.
