@@ -212,3 +212,4 @@ Acceptance:
 - 2026-09-30 — Woodpecker repository enabled by the owner; CI validation gate is now active for Phase 13.
 
 - 2026-09-30 — Woodpecker repository enabled by owner; branch push used to trigger the first CI validation for this refactor.
+- 2026-09-30 — First Woodpecker gate: install/contracts/event-core passed; browser-contracts failed only because two real helper-process IPC tests exceeded Bun's 5s timeout while running concurrently with the heavy browser contract suite. CI was restructured to run helper IPC contracts in an isolated step without weakening assertions or extending the test timeout.
