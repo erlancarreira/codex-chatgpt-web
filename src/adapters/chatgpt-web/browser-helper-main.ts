@@ -11,8 +11,9 @@ import { isChatGptWebMultipartPartCount, type CompiledChatGptWebPrompt } from ".
 import { ChatGptMirroredTurnProgress } from "./turn-progress";
 import type { ChatGptExternalTurnProgressSnapshot } from "./turn-progress";
 import { parseTurnLifecycleState } from "./turn-lifecycle-protocol";
-import type { TurnLifecycleSink } from "../../ports/turn-lifecycle";
-import type { SequencedTurnEvent, TurnEvent, TurnState } from "../../core/turn/turn-state-machine";
+import type { TurnLifecycleSink, TurnLifecycleTraceRecord } from "../../ports/turn-lifecycle";
+import { createTurnState, type SequencedTurnEvent, type TurnEvent, type TurnState } from "../../core/turn/turn-state-machine";
+import { redactTurnDiagnosticText } from "../../core/observability/redaction";
 
 interface RunMessage {
   type: "run";
@@ -27,6 +28,7 @@ interface RunMessage {
   };
   turn: {
     traceId: string;
+    turnId?: string;
     modelId: string;
     reasoning?: string;
     modelFamily?: "5.6" | "6";
@@ -176,6 +178,10 @@ async function run(message: RunMessage): Promise<void> {
     throw new Error("Browser helper turn identity is invalid");
   }
   if (abortControllers.has(message.id)) throw new Error(`Browser helper turn already exists: ${message.id}`);
+  if (message.turn.turnId !== undefined
+    && (typeof message.turn.turnId !== "string" || !message.turn.turnId.trim() || message.turn.turnId.length > 256)) {
+    throw new Error("Browser helper native turn id is invalid");
+  }
   if (message.turn.resumeAvailable !== undefined && typeof message.turn.resumeAvailable !== "boolean") {
     throw new Error("Browser helper resume availability is invalid");
   }
@@ -234,10 +240,38 @@ async function run(message: RunMessage): Promise<void> {
   const promptSelection = createBrowserHelperPromptSelection();
   preparedSelections.set(message.id, promptSelection);
   const prepareSelected = async () => ({ ...await promptSelection.wait(), release: () => {} });
-  let lifecycleState: TurnState | undefined;
+  let lifecycleState: TurnState = createTurnState();
+  const lifecycleTrace: TurnLifecycleTraceRecord[] = [];
   const lifecycle: TurnLifecycleSink | undefined = message.turn.lifecycle
     ? {
-      phase: () => lifecycleState?.phase ?? "created",
+      phase: () => lifecycleState.phase,
+      diagnosticSnapshot: () => {
+        const terminal = lifecycleState.terminal
+          ? {
+            ...lifecycleState.terminal,
+            ...(lifecycleState.terminal.reason
+              ? { reason: redactTurnDiagnosticText(lifecycleState.terminal.reason) }
+              : {}),
+          }
+          : undefined;
+        const lastTransportFailure = lifecycleState.lastTransportFailure
+          ? {
+            ...lifecycleState.lastTransportFailure,
+            reason: redactTurnDiagnosticText(lifecycleState.lastTransportFailure.reason),
+          }
+          : undefined;
+        return {
+          state: {
+            ...lifecycleState,
+            activeToolCalls: [...lifecycleState.activeToolCalls],
+            startedToolCalls: [...lifecycleState.startedToolCalls],
+            ...(terminal ? { terminal } : {}),
+            ...(lastTransportFailure ? { lastTransportFailure } : {}),
+          },
+          ...(terminal ? { terminal } : {}),
+          events: lifecycleTrace.map(entry => ({ ...entry })),
+        };
+      },
       dispatch: (source: SequencedTurnEvent["source"], event: TurnEvent) => new Promise<TurnState>((resolve, reject) => {
         lifecycleRequestId += 1;
         const requestId = lifecycleRequestId;
@@ -256,12 +290,26 @@ async function run(message: RunMessage): Promise<void> {
         }
       }).then(state => {
         lifecycleState = state;
+        const requestId = "requestId" in event && typeof event.requestId === "string"
+          ? event.requestId
+          : undefined;
+        lifecycleTrace.push({
+          traceId: message.turn.traceId,
+          ...(message.turn.turnId ? { turnId: message.turn.turnId } : {}),
+          ...(requestId ? { requestId } : {}),
+          source,
+          sequence: state.sequence,
+          timestamp: event.at,
+          type: event.type,
+        });
+        if (lifecycleTrace.length > 512) lifecycleTrace.splice(0, lifecycleTrace.length - 512);
         return state;
       }),
     }
     : undefined;
   const turn: BrowserTurn = {
     traceId: message.turn.traceId,
+    ...(message.turn.turnId ? { turnId: message.turn.turnId } : {}),
     modelId: message.turn.modelId,
     reasoning: message.turn.reasoning,
     ...(message.turn.modelFamily ? { modelFamily: message.turn.modelFamily } : {}),
