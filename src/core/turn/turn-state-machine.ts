@@ -167,7 +167,7 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
       return withSequence(state, input, { phase: "submitted" });
 
     case "transport_accepted": {
-      requirePhase(state, event, ["submitted", "accepted"]);
+      requirePhase(state, event, ["submitted", "accepted", "streaming", "waiting_tool", "tool_running"]);
       assertRequestId(event.requestId);
       if (!Number.isSafeInteger(event.status) || event.status < 100 || event.status > 599) {
         throw new Error("Turn transport status must be a valid HTTP status");
@@ -180,7 +180,11 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
         );
       }
       return withSequence(state, input, {
-        phase: "accepted",
+        phase: state.phase === "waiting_tool" || state.phase === "tool_running"
+          ? state.phase
+          : state.phase === "streaming"
+            ? "streaming"
+            : "accepted",
         primaryRequestId: event.requestId,
         acceptedStatus: event.status,
       });
@@ -253,7 +257,11 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
     }
 
     case "tool_requested": {
-      requirePhase(state, event, ["accepted", "streaming"]);
+      // A current-turn MCP request is itself conclusive proof that ChatGPT accepted the
+      // submission. It may race ahead of CDP responseReceived, so "submitted" is a valid
+      // entry point. A later transport_accepted event fills request identity/status without
+      // disturbing the active tool phase.
+      requirePhase(state, event, ["submitted", "accepted", "streaming"]);
       const callIds = uniqueIds(event.callIds);
       if (callIds.length === 0) throw new Error("Tool request event requires at least one call");
       if (state.activeToolCalls.length > 0) {
