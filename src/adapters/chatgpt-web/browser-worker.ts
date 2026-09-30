@@ -112,6 +112,7 @@ import {
 } from "./transport-tracker";
 import { decideMissingAssistant } from "./turn-lifecycle-policy";
 import { ChatGptDomLifecycleAdapter } from "./dom-lifecycle-adapter";
+import { BoundedRecoveryBudget, RecoveryBudgetExceededError } from "../../core/resilience/recovery-budget";
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
@@ -3394,8 +3395,14 @@ export class ChatGptBrowserWorker {
   ): Promise<ChatGptAssistantTurnBinding> {
     let observationPage = page;
     let observationBaseline = baseline;
-    let recoveryAttempts = 0;
-    let missingTurnRecoveryAttempts = 0;
+    const observationRecoveryBudget = new BoundedRecoveryBudget(
+      "assistant-dom-observation",
+      MAX_CHATGPT_BROWSER_PAGE_REBINDS,
+    );
+    const missingAssistantRecoveryBudget = new BoundedRecoveryBudget(
+      "assistant-dom-missing",
+      MAX_CHATGPT_BROWSER_PAGE_REBINDS,
+    );
     let responseDeadline = Math.min(
       deadline ?? Number.POSITIVE_INFINITY,
       Date.now() + graceMs,
@@ -3432,15 +3439,18 @@ export class ChatGptBrowserWorker {
       } catch (error) {
         const latestProgress = externalProgress?.snapshot();
         if (error instanceof ChatGptBrowserObservationTimeoutError && recoverObservation) {
-          recoveryAttempts += 1;
-          if (recoveryAttempts > MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
+          let recoveryAttempt: number;
+          try {
+            recoveryAttempt = observationRecoveryBudget.consume(error);
+          } catch (budgetError) {
+            if (!(budgetError instanceof RecoveryBudgetExceededError)) throw budgetError;
             throw new Error(
-              `ChatGPT accepted the message, but its DOM remained unresponsive after ${MAX_CHATGPT_BROWSER_PAGE_REBINDS} same-page rebinds`,
+              `ChatGPT accepted the message, but its DOM remained unresponsive after ${budgetError.limit} same-page rebinds`,
               { cause: error },
             );
           }
           const recovered = await recoverObservation(
-            recoveryAttempts,
+            recoveryAttempt,
             error,
             observationBaseline,
             signal,
@@ -3460,7 +3470,7 @@ export class ChatGptBrowserWorker {
         );
         continue;
       }
-      recoveryAttempts = 0;
+      observationRecoveryBudget.reset();
       // A tool batch can arrive while the DOM probe is in flight. Read progress again before
       // acknowledging its boundary; the pre-probe snapshot can otherwise leave the broker waiting
       // despite this exact iteration having successfully observed the page.
@@ -3497,12 +3507,16 @@ export class ChatGptBrowserWorker {
       const networkLive = networkProgress?.networkIsLive(now, graceMs) ?? false;
       const recoverMissingAssistant = async (): Promise<boolean> => {
         const missingTurn = new Error("ChatGPT accepted the message but did not expose its assistant turn in the DOM");
-        if (!recoverObservation || missingTurnRecoveryAttempts >= MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
-          throw missingTurn;
+        if (!recoverObservation) throw missingTurn;
+        let recoveryAttempt: number;
+        try {
+          recoveryAttempt = missingAssistantRecoveryBudget.consume(missingTurn);
+        } catch (budgetError) {
+          if (budgetError instanceof RecoveryBudgetExceededError) throw missingTurn;
+          throw budgetError;
         }
-        missingTurnRecoveryAttempts += 1;
         const recovered = await recoverObservation(
-          missingTurnRecoveryAttempts,
+          recoveryAttempt,
           missingTurn,
           observationBaseline,
           signal,
@@ -5811,8 +5825,14 @@ export class ChatGptBrowserWorker {
       };
       const domHealthTracker = new ChatGptTurnDomHealthTracker();
       const responseDomCache: ChatGptResponseDomCache = {};
-      let consecutiveObservationRebinds = 0;
-      let internalObservationFaults = 0;
+      const responseRebindBudget = new BoundedRecoveryBudget(
+        "assistant-response-rebind",
+        MAX_CHATGPT_BROWSER_PAGE_REBINDS,
+      );
+      const internalObservationBudget = new BoundedRecoveryBudget(
+        "browser-observation-fault",
+        MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS,
+      );
       let observedThisIteration = false;
       let completionFenceRevision: number | undefined;
       const domLifecycle = new ChatGptDomLifecycleAdapter(turn.lifecycle);
@@ -5848,7 +5868,7 @@ export class ChatGptBrowserWorker {
           CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS,
           () => diagnostics.capture(page, "tool-confirmation-visible"),
         )) {
-          internalObservationFaults = 0;
+          internalObservationBudget.reset();
           responseDomCache.key = undefined;
           responseDomCache.snapshot = undefined;
           continue;
@@ -5873,15 +5893,18 @@ export class ChatGptBrowserWorker {
             }
           } catch (error) {
             if (!(error instanceof ChatGptBrowserObservationTimeoutError) || !assistantObservationRecovery) throw error;
-            consecutiveObservationRebinds += 1;
-            if (consecutiveObservationRebinds > MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
+            let recoveryAttempt: number;
+            try {
+              recoveryAttempt = responseRebindBudget.consume(error);
+            } catch (budgetError) {
+              if (!(budgetError instanceof RecoveryBudgetExceededError)) throw budgetError;
               throw new Error(
-                `ChatGPT browser DOM remained unresponsive after ${MAX_CHATGPT_BROWSER_PAGE_REBINDS} page recoveries`,
+                `ChatGPT browser DOM remained unresponsive after ${budgetError.limit} page recoveries`,
                 { cause: error },
               );
             }
             const recovered = await recoverAssistantObservation(
-              consecutiveObservationRebinds,
+              recoveryAttempt,
               error,
               submissionBaseline,
               turn.abortSignal,
@@ -5905,10 +5928,10 @@ export class ChatGptBrowserWorker {
           identity: responseTurn.identity,
         });
         if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
-        if (snapshot.responsePresent) consecutiveObservationRebinds = 0;
+        if (snapshot.responsePresent) responseRebindBudget.reset();
         // The page was read successfully, so the fault budget is genuinely consecutive even when
         // this iteration goes on to `continue` for a rebind, confirmation, or liveness pause.
-        internalObservationFaults = 0;
+        internalObservationBudget.reset();
         observedThisIteration = true;
         // Liveness may postpone a verdict, never waive it: once activity goes stale the DOM alone
         // decides, so a tool call that never returns cannot hold a turn with no explicit deadline open forever.
@@ -6080,16 +6103,19 @@ export class ChatGptBrowserWorker {
         // TypeError belongs to a consumer - Markdown buffering, text/trace callbacks, checkpoint
         // capture - and retrying it would rerun an iteration whose side effects already happened.
         if (!(error instanceof TypeError) || observedThisIteration) throw error;
-        internalObservationFaults += 1;
-        if (internalObservationFaults > MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS) {
+        let observationAttempt: number;
+        try {
+          observationAttempt = internalObservationBudget.consume(error);
+        } catch (budgetError) {
+          if (!(budgetError instanceof RecoveryBudgetExceededError)) throw budgetError;
           throw new Error(
-            `ChatGPT browser observation failed ${internalObservationFaults} times in a row: ${error.message}`,
+            `ChatGPT browser observation failed ${budgetError.limit + 1} times in a row: ${error.message}`,
             { cause: error },
           );
         }
         console.warn(
           `[chatgpt-web] browser turn ${turn.traceId} tolerated internal observation fault`
-          + ` ${internalObservationFaults}/${MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS}: ${error.message}`,
+          + ` ${observationAttempt}/${internalObservationBudget.limit}: ${error.message}`,
         );
         await diagnostics.capture(page, "internal-observation-fault");
         responseDomCache.key = undefined;
