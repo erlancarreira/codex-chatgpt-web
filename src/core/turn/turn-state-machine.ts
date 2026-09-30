@@ -176,9 +176,10 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
         state.primaryRequestId
         && state.primaryRequestId !== event.requestId,
       );
+      const lastTransportFailure = state.lastTransportFailure;
       const canReplaceRecoverablePrimary = replacingPrimary
-        && state.lastTransportFailure?.requestId === state.primaryRequestId
-        && state.lastTransportFailure.classification === "recoverable"
+        && lastTransportFailure?.requestId === state.primaryRequestId
+        && lastTransportFailure?.classification === "recoverable"
         && state.activeToolCalls.length === 0
         && !state.transportFinished;
       if (replacingPrimary && !canReplaceRecoverablePrimary) {
