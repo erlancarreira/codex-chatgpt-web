@@ -83,12 +83,12 @@ Acceptance:
 
 ## Phase 5 — DOM adapter
 
-- [ ] Convert MutationObserver/assistant surface observations to typed events.
-- [ ] Add revision-based coalescing.
-- [ ] Remove DOM as a prerequisite for network-active turn survival.
-- [ ] Keep DOM responsibilities limited to rendered text, controls, confirmations and surface identity.
-- [ ] Make surface-loss recovery explicit and bounded.
-- [ ] Add tests for DOM detach/remount while network remains active.
+- [x] Convert MutationObserver/assistant surface observations to typed events.
+- [x] Add revision-based coalescing.
+- [x] Remove DOM as a prerequisite for network-active turn survival.
+- [x] Keep DOM responsibilities limited to rendered text, controls, confirmations and surface identity.
+- [x] Make surface-loss recovery explicit and bounded.
+- [x] Add tests for DOM detach/remount while network remains active.
 
 Acceptance:
 - DOM disappearance alone cannot fail an otherwise healthy streaming turn.
@@ -200,3 +200,4 @@ Acceptance:
 - 2026-09-30 — Draft PR #1 opened. Remote baseline inspected: Playwright/CDP/MutationObserver are event sources, while the main browser orchestration still uses observation loops and distributed completion/retry decisions. Core migration seams identified.
 - 2026-09-30 — Phases 1–4 core foundations implemented: deterministic turn reducer, bounded single-writer actor, per-request transport state, CDP-primary/Playwright-fallback tracker, request correlation and regression coverage.
 - 2026-09-30 — Main response observation path converted from fixed 250 ms polling to DOM/MCP/network event wakes with a named watchdog only. Missing-assistant/stream-failure/stall decisions centralized in a pure lifecycle policy.
+- 2026-09-30 — Phase 5 completed: MutationObserver-backed DOM snapshots now flow through a typed lifecycle adapter with monotonic revisions; surface loss/remount are non-terminal observations and network-active turns remain alive.
