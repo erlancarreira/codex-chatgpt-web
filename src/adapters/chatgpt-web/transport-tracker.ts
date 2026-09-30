@@ -75,7 +75,7 @@ export class ChatGptWebTransportTracker {
       ...(primary?.responseStatus !== undefined ? { responseStatus: primary.responseStatus } : {}),
       streamActive: primary !== undefined
         && (primary.lifecycle === "sent" || primary.lifecycle === "accepted" || primary.lifecycle === "streaming"),
-      completed: primary?.lifecycle === "finished",
+      completed: primary?.lifecycle === "finished" || (primary?.lifecycle === "failed" && abortedAfterResponse),
       failed: primary?.lifecycle === "failed" && failureClassification !== "benign",
       ...(primary?.lifecycle === "failed" && failureClassification !== "benign" && primary.failureText
         ? { failureText: primary.failureText }
@@ -85,7 +85,7 @@ export class ChatGptWebTransportTracker {
       ...(primary ? { requestAt: primary.sentAt } : {}),
       ...(primary?.responseAt !== undefined ? { responseAt: primary.responseAt } : {}),
       ...(primary?.lastActivityAt !== undefined ? { lastActivityAt: primary.lastActivityAt } : {}),
-      ...(primary?.finishedAt !== undefined ? { completedAt: primary.finishedAt } : {}),
+      ...(primary?.finishedAt !== undefined ? { completedAt: primary.finishedAt } : primary?.failedAt !== undefined && abortedAfterResponse ? { completedAt: primary.failedAt } : {}),
       dataChunks: primary?.chunksReceived ?? 0,
       dataBytes: primary?.bytesReceived ?? 0,
       ...(primary ? { primaryRequestId: primary.requestId } : {}),
