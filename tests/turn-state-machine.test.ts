@@ -106,3 +106,25 @@ test("turn sequence and primary request invariants fail closed", () => {
     type: "transport_data", at: 4, requestId: "r2", bytes: 1,
   })).toThrow("primary request");
 });
+
+
+test("current-turn MCP activity can prove acceptance before the transport response event", () => {
+  let state = createTurnState();
+  state = apply(state, "runtime", { type: "prepare", at: 1 });
+  state = apply(state, "runtime", { type: "submission_sent", at: 2 });
+  state = apply(state, "tool", { type: "tool_requested", at: 3, callIds: ["call-1"] });
+  expect(state.phase).toBe("waiting_tool");
+  expect(state.primaryRequestId).toBeUndefined();
+
+  state = apply(state, "transport", {
+    type: "transport_accepted", at: 4, requestId: "r1", status: 200,
+  });
+  expect(state.phase).toBe("waiting_tool");
+  expect(state.primaryRequestId).toBe("r1");
+  expect(state.acceptedStatus).toBe(200);
+
+  state = apply(state, "tool", { type: "tool_started", at: 5, callId: "call-1" });
+  state = apply(state, "transport", { type: "transport_data", at: 6, requestId: "r1", bytes: 32 });
+  expect(state.phase).toBe("tool_running");
+  expect(state.hasTransportData).toBeTrue();
+});
