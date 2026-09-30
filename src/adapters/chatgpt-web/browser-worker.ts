@@ -103,6 +103,10 @@ import type {
   ChatGptExternalTurnProgressSnapshot,
   ChatGptTurnProgressReader,
 } from "./turn-progress";
+import {
+  ChatGptWebTransportTracker,
+  type ChatGptWebTransportSnapshot,
+} from "./transport-tracker";
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
@@ -835,24 +839,7 @@ const chatGptTerminalErrorAlert = (scope: ChatGptTextScope): Locator => scope
 // The current UI renders message_length_exceeds_limit as an ordinary response error.
 // Observe only browser-issued submissions from this owned page after Send is activated;
 // an old response, another tab, or a background endpoint cannot classify this turn.
-export interface ChatGptSubmissionNetworkSnapshot {
-  cdpAttached: boolean;
-  requestSeen: boolean;
-  responseSeen: boolean;
-  responseStatus?: number;
-  streamActive: boolean;
-  completed: boolean;
-  failed: boolean;
-  failureText?: string;
-  abortedAfterResponse: boolean;
-  abortText?: string;
-  requestAt?: number;
-  responseAt?: number;
-  lastActivityAt?: number;
-  completedAt?: number;
-  dataChunks: number;
-  dataBytes: number;
-}
+export type ChatGptSubmissionNetworkSnapshot = ChatGptWebTransportSnapshot;
 
 export class ChatGptSubmissionRejectionObserver {
   private page?: Page;
@@ -861,62 +848,17 @@ export class ChatGptSubmissionRejectionObserver {
   private cdpGeneration = 0;
   private readonly cdpRequestIds = new Set<string>();
   private readonly requests = new Set<Request>();
+  private readonly playwrightRequestIds = new WeakMap<Request, string>();
+  private playwrightRequestSequence = 0;
   private checks: Array<Promise<ChatGptWebAdapterError | undefined>> = [];
-  private network: ChatGptSubmissionNetworkSnapshot = this.emptyNetworkSnapshot();
+  private readonly transport = new ChatGptWebTransportTracker();
 
-  private emptyNetworkSnapshot(): ChatGptSubmissionNetworkSnapshot {
-    return {
-      cdpAttached: false,
-      requestSeen: false,
-      responseSeen: false,
-      streamActive: false,
-      completed: false,
-      failed: false,
-      abortedAfterResponse: false,
-      dataChunks: 0,
-      dataBytes: 0,
-    };
-  }
-
-  private markNetworkActivity(): number {
-    const now = Date.now();
-    this.network.lastActivityAt = now;
-    return now;
-  }
-
-  private activeRequestCount(): number {
-    return this.requests.size + this.cdpRequestIds.size;
-  }
-
-  private updateNetworkCompletion(now: number): void {
-    const active = this.activeRequestCount();
-    this.network.completed = this.network.requestSeen && !this.network.failed && active === 0;
-    this.network.streamActive = !this.network.failed && active > 0;
-    if (this.network.completed) this.network.completedAt = now;
-  }
-
-  private benignPostResponseAbort(errorText: string): boolean {
-    return /(?:^|::)ERR_ABORTED$/i.test(errorText.trim())
-      && this.network.responseSeen
-      && this.network.responseStatus !== undefined
-      && this.network.responseStatus >= 200
-      && this.network.responseStatus < 400
-      && (!this.network.cdpAttached || this.network.dataChunks > 0 || this.network.dataBytes > 0);
-  }
-
-  private recordNetworkFailure(errorText: string): void {
-    const now = this.markNetworkActivity();
-    if (this.benignPostResponseAbort(errorText)) {
-      this.network.abortedAfterResponse = true;
-      this.network.abortText = errorText;
-      this.network.failed = false;
-      this.network.failureText = undefined;
-      this.updateNetworkCompletion(now);
-      return;
-    }
-    this.network.failed = true;
-    this.network.streamActive = false;
-    this.network.failureText = errorText;
+  private playwrightRequestId(request: Request): string {
+    const existing = this.playwrightRequestIds.get(request);
+    if (existing) return existing;
+    const requestId = `pw:${++this.playwrightRequestSequence}`;
+    this.playwrightRequestIds.set(request, requestId);
+    return requestId;
   }
 
   private readonly onRequest = (request: Request): void => {
@@ -925,25 +867,27 @@ export class ChatGptSubmissionRejectionObserver {
     const serviceWorker = typeof request.serviceWorker === "function" ? request.serviceWorker() : null;
     if (!serviceWorker && request.frame() !== this.page.mainFrame()) return;
     this.requests.add(request);
-    const now = this.markNetworkActivity();
-    this.network.requestSeen = true;
-    this.network.requestAt ??= now;
-    this.network.completed = false;
-    this.network.failed = false;
-    this.network.failureText = undefined;
-    this.network.abortedAfterResponse = false;
-    this.network.abortText = undefined;
-    this.network.completedAt = undefined;
+    this.transport.record({
+      type: "request_sent",
+      source: "playwright",
+      requestId: this.playwrightRequestId(request),
+      at: Date.now(),
+      url: request.url(),
+      method: request.method(),
+      role: "candidate",
+    });
   };
 
   private readonly onResponse = (response: Response): void => {
     if (!this.requests.has(response.request())) return;
     const status = response.status();
-    const now = this.markNetworkActivity();
-    this.network.responseSeen = true;
-    this.network.responseStatus = status;
-    this.network.responseAt ??= now;
-    if (status >= 200 && status < 400) this.network.streamActive = !this.network.completed;
+    this.transport.record({
+      type: "response_received",
+      source: "playwright",
+      requestId: this.playwrightRequestId(response.request()),
+      at: Date.now(),
+      status,
+    });
     if (status !== 413
       || !response.headers()["content-type"]?.includes("application/json")) return;
     this.checks.push(withChatGptBrowserObservationTimeout(response.json(), 3_000)
@@ -952,20 +896,28 @@ export class ChatGptSubmissionRejectionObserver {
           "ChatGPT rejected this message because it exceeds the selected mode's input-size limit. Compact the task before retrying.",
           { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
         ) : undefined)
-      // Unreadable or unfamiliar responses do not establish a size rejection. The normal
-      // bound-response DOM error remains authoritative in that case.
       .catch(() => undefined));
   };
 
   private readonly onRequestFinished = (request: Request): void => {
     if (!this.requests.delete(request)) return;
-    const now = this.markNetworkActivity();
-    this.updateNetworkCompletion(now);
+    this.transport.record({
+      type: "request_finished",
+      source: "playwright",
+      requestId: this.playwrightRequestId(request),
+      at: Date.now(),
+    });
   };
 
   private readonly onRequestFailed = (request: Request): void => {
     if (!this.requests.delete(request)) return;
-    this.recordNetworkFailure(request.failure()?.errorText || "request_failed");
+    this.transport.record({
+      type: "request_failed",
+      source: "playwright",
+      requestId: this.playwrightRequestId(request),
+      at: Date.now(),
+      errorText: request.failure()?.errorText || "request_failed",
+    });
   };
 
   private readonly onCdpRequest = (event: {
@@ -975,15 +927,15 @@ export class ChatGptSubmissionRejectionObserver {
     if (event.request.method !== "POST"
       || !isChatGptConversationSubmissionUrl(event.request.url)) return;
     this.cdpRequestIds.add(event.requestId);
-    const now = this.markNetworkActivity();
-    this.network.requestSeen = true;
-    this.network.requestAt ??= now;
-    this.network.completed = false;
-    this.network.failed = false;
-    this.network.failureText = undefined;
-    this.network.abortedAfterResponse = false;
-    this.network.abortText = undefined;
-    this.network.completedAt = undefined;
+    this.transport.record({
+      type: "request_sent",
+      source: "cdp",
+      requestId: event.requestId,
+      at: Date.now(),
+      url: event.request.url,
+      method: event.request.method,
+      role: "candidate",
+    });
   };
 
   private readonly onCdpResponse = (event: {
@@ -991,19 +943,28 @@ export class ChatGptSubmissionRejectionObserver {
     response: { status: number };
   }): void => {
     if (!this.cdpRequestIds.has(event.requestId)) return;
-    const now = this.markNetworkActivity();
-    this.network.responseSeen = true;
-    this.network.responseStatus = event.response.status;
-    this.network.responseAt ??= now;
-    this.network.streamActive = true;
+    this.transport.record({
+      type: "response_received",
+      source: "cdp",
+      requestId: event.requestId,
+      at: Date.now(),
+      status: event.response.status,
+    });
     const session = this.cdp;
     if (!session) return;
     void session.send("Network.streamResourceContent", { requestId: event.requestId })
       .then(({ bufferedData }) => {
         if (!this.cdpRequestIds.has(event.requestId) || !bufferedData) return;
-        this.network.dataBytes += Buffer.from(bufferedData, "base64").length;
-        this.network.dataChunks += 1;
-        this.markNetworkActivity();
+        const bytes = Buffer.from(bufferedData, "base64").length;
+        if (bytes <= 0) return;
+        this.transport.record({
+          type: "data_received",
+          source: "cdp",
+          requestId: event.requestId,
+          at: Date.now(),
+          bytes,
+          evidenceKey: `buffered:${event.requestId}:${bytes}`,
+        });
       })
       .catch(() => {
         // Page-level request/response tracking remains a safe fallback when streaming is unsupported.
@@ -1015,27 +976,42 @@ export class ChatGptSubmissionRejectionObserver {
     dataLength: number;
   }): void => {
     if (!this.cdpRequestIds.has(event.requestId)) return;
-    this.network.dataChunks += 1;
-    this.network.dataBytes += Math.max(0, event.dataLength);
-    this.network.streamActive = true;
-    this.markNetworkActivity();
+    const bytes = Math.max(0, event.dataLength);
+    if (bytes <= 0) return;
+    this.transport.record({
+      type: "data_received",
+      source: "cdp",
+      requestId: event.requestId,
+      at: Date.now(),
+      bytes,
+    });
   };
 
   private readonly onCdpFinished = (event: { requestId: string }): void => {
     if (!this.cdpRequestIds.delete(event.requestId)) return;
-    const now = this.markNetworkActivity();
-    this.updateNetworkCompletion(now);
+    this.transport.record({
+      type: "request_finished",
+      source: "cdp",
+      requestId: event.requestId,
+      at: Date.now(),
+    });
   };
 
   private readonly onCdpFailed = (event: { requestId: string; errorText?: string }): void => {
     if (!this.cdpRequestIds.delete(event.requestId)) return;
-    this.recordNetworkFailure(event.errorText || "network_loading_failed");
+    this.transport.record({
+      type: "request_failed",
+      source: "cdp",
+      requestId: event.requestId,
+      at: Date.now(),
+      errorText: event.errorText || "network_loading_failed",
+    });
   };
 
   async begin(page: Page): Promise<void> {
     this.dispose();
     this.checks = [];
-    this.network = this.emptyNetworkSnapshot();
+    this.transport.reset();
     this.page = page;
     const context = typeof page.context === "function" ? page.context() : undefined;
     if (context && typeof context.on === "function") {
@@ -1067,10 +1043,10 @@ export class ChatGptSubmissionRejectionObserver {
       session.on("Network.loadingFailed", this.onCdpFailed);
       await session.send("Network.enable");
       if (generation === this.cdpGeneration && this.cdp === session) {
-        this.network.cdpAttached = true;
+        this.transport.setCdpAttached(true);
       }
     } catch {
-      // Playwright page events still classify rejection errors if CDP streaming is unavailable.
+      // Playwright page events remain the fallback when CDP is unavailable.
     }
   }
 
@@ -1079,16 +1055,11 @@ export class ChatGptSubmissionRejectionObserver {
   }
 
   networkSnapshot(): ChatGptSubmissionNetworkSnapshot {
-    return { ...this.network };
+    return this.transport.networkSnapshot();
   }
 
   networkIsLive(now = Date.now(), graceMs = CHATGPT_RESPONSE_DOM_GRACE_MS): boolean {
-    const lastActivityAt = this.network.lastActivityAt;
-    return this.network.requestSeen
-      && !this.network.completed
-      && !this.network.failed
-      && lastActivityAt !== undefined
-      && now - lastActivityAt <= graceMs;
+    return this.transport.networkIsLive(now, graceMs);
   }
 
   dispose(): void {
