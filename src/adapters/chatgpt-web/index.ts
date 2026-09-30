@@ -1269,6 +1269,14 @@ export function createChatGptWebAdapter(
                 for (const message of results) {
                   await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
                   session.runtime.externalProgress.recordToolResult();
+                  const lifecycle = session.runtime.lifecycle;
+                  if (lifecycle?.snapshot().activeToolCalls.includes(message.toolCallId)) {
+                    await lifecycle.dispatch("tool", {
+                      type: "tool_completed",
+                      at: Date.now(),
+                      callId: message.toolCallId,
+                    });
+                  }
                   session.markResultDelivered(message.toolCallId);
                 }
               }
@@ -1301,6 +1309,26 @@ export function createChatGptWebAdapter(
                     throw new Error("ChatGPT broker returned tools for a read-only browser turn");
                   }
                   if (requests.length > 0) {
+                    const lifecycle = session.runtime.lifecycle;
+                    if (lifecycle) {
+                      const callIds = requests.map(request => request.callId);
+                      const active = lifecycle.snapshot().activeToolCalls;
+                      if (active.length === 0) {
+                        await lifecycle.dispatch("tool", {
+                          type: "tool_requested",
+                          at: Date.now(),
+                          callIds,
+                        });
+                      } else {
+                        const sameBatch = active.length === callIds.length
+                          && active.every(callId => callIds.includes(callId));
+                        if (!sameBatch) {
+                          throw new Error(
+                            `ChatGPT broker replayed a tool batch that does not match the actor-owned batch: active=${active.join(",")} received=${callIds.join(",")}`,
+                          );
+                        }
+                      }
+                    }
                     const revision = externalProgress.recordToolBatch(requests.length);
                     if (!session.runtime.manualControl) {
                       // The browser outcome is in the same race below and owns the semantic DOM and
@@ -1396,6 +1424,18 @@ export function createChatGptWebAdapter(
                   return;
                 }
                 validateBatchTools(parsed, next.requests);
+                const lifecycle = session.runtime.lifecycle;
+                if (lifecycle) {
+                  for (const request of next.requests) {
+                    if (!lifecycle.snapshot().startedToolCalls.includes(request.callId)) {
+                      await lifecycle.dispatch("tool", {
+                        type: "tool_started",
+                        at: Date.now(),
+                        callId: request.callId,
+                      });
+                    }
+                  }
+                }
                 session.setOutstanding(next.requests, roundReasoning, session.roundEvents(roundKey));
                 emitRoundBatch(buffer => emitToolBatch(
                   next.requests,
