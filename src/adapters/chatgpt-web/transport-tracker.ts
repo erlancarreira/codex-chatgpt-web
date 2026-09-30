@@ -8,6 +8,7 @@ import {
 } from "../../core/transport/transport-session";
 
 export interface ChatGptWebTransportSnapshot {
+  revision: number;
   cdpAttached: boolean;
   requestSeen: boolean;
   responseSeen: boolean;
@@ -28,15 +29,55 @@ export interface ChatGptWebTransportSnapshot {
   requestCount: number;
 }
 
+interface TransportWaiter {
+  afterRevision: number;
+  resolve: (snapshot: ChatGptWebTransportSnapshot) => void;
+  reject: (error: Error) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}
+
 export class ChatGptWebTransportTracker {
   private session: TransportSessionState = createTransportSessionState();
   private cdpAttached = false;
   private sourceMode?: TransportObservationSource;
+  private readonly waiters = new Set<TransportWaiter>();
 
   reset(): void {
+    const resetError = new Error("ChatGPT web transport tracker reset");
+    for (const waiter of this.waiters) {
+      if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
+      waiter.reject(resetError);
+    }
+    this.waiters.clear();
     this.session = createTransportSessionState();
     this.cdpAttached = false;
     this.sourceMode = undefined;
+  }
+
+  revision(): number {
+    return this.session.revision;
+  }
+
+  waitForChange(afterRevision: number, signal?: AbortSignal): Promise<ChatGptWebTransportSnapshot> {
+    if (!Number.isSafeInteger(afterRevision) || afterRevision < 0) {
+      throw new Error("Transport wait revision must be a non-negative safe integer");
+    }
+    if (this.session.revision > afterRevision) return Promise.resolve(this.networkSnapshot());
+    if (signal?.aborted) {
+      return Promise.reject(new DOMException("Transport wait aborted", "AbortError"));
+    }
+    return new Promise((resolve, reject) => {
+      const waiter: TransportWaiter = { afterRevision, resolve, reject, ...(signal ? { signal } : {}) };
+      if (signal) {
+        waiter.onAbort = () => {
+          this.waiters.delete(waiter);
+          reject(new DOMException("Transport wait aborted", "AbortError"));
+        };
+        signal.addEventListener("abort", waiter.onAbort, { once: true });
+      }
+      this.waiters.add(waiter);
+    });
   }
 
   setCdpAttached(attached: boolean): void {
@@ -55,6 +96,7 @@ export class ChatGptWebTransportTracker {
     const next = reduceTransportSession(this.session, observation);
     if (next === this.session) return false;
     this.session = next;
+    this.notify();
     return true;
   }
 
@@ -69,6 +111,7 @@ export class ChatGptWebTransportTracker {
     const abortedAfterResponse = failureClassification === "benign";
 
     return {
+      revision: this.session.revision,
       cdpAttached: this.cdpAttached,
       requestSeen: requests.length > 0,
       responseSeen: primary?.responseStatus !== undefined,
@@ -103,6 +146,16 @@ export class ChatGptWebTransportTracker {
       && !snapshot.failed
       && snapshot.lastActivityAt !== undefined
       && now - snapshot.lastActivityAt <= graceMs;
+  }
+
+  private notify(): void {
+    const snapshot = this.networkSnapshot();
+    for (const waiter of [...this.waiters]) {
+      if (snapshot.revision <= waiter.afterRevision) continue;
+      this.waiters.delete(waiter);
+      if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
+      waiter.resolve(snapshot);
+    }
   }
 
   private shouldAcceptSource(observation: TransportObservation): boolean {
