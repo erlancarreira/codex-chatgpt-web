@@ -60,6 +60,36 @@ test("pending DOM revisions coalesce to the newest revision", async () => {
   expect(transitions.filter(event => event.event.type === "dom_revision")).toHaveLength(1);
 });
 
+test("DOM coalescing never crosses a critical event boundary", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const seen: SequencedTurnEvent[] = [];
+  const actor = new TurnActor({
+    onTransition: async (_state, event) => {
+      seen.push(event);
+      if (event.event.type === "transport_data" && event.event.at === 4) await gate;
+    },
+  });
+
+  await actor.dispatch("runtime", { type: "prepare", at: 1 });
+  await actor.dispatch("runtime", { type: "submission_sent", at: 2 });
+  await actor.dispatch("transport", { type: "transport_accepted", at: 3, requestId: "r1", status: 200 });
+
+  const blocked = actor.dispatch("transport", { type: "transport_data", at: 4, requestId: "r1", bytes: 1 });
+  await Promise.resolve();
+  const domBefore = actor.dispatch("dom", { type: "dom_revision", at: 5, revision: 10 });
+  const critical = actor.dispatch("transport", { type: "transport_data", at: 6, requestId: "r1", bytes: 1 });
+  const domAfter = actor.dispatch("dom", { type: "dom_revision", at: 7, revision: 11 });
+
+  release();
+  await Promise.all([blocked, domBefore, critical, domAfter]);
+
+  const tail = seen.slice(-3).map(entry => entry.event.type);
+  expect(tail).toEqual(["dom_revision", "transport_data", "dom_revision"]);
+  expect(seen.filter(entry => entry.event.type === "dom_revision")).toHaveLength(2);
+  expect(actor.snapshot().lastDomRevision).toBe(11);
+});
+
 test("critical events can evict replaceable DOM pressure but are not silently dropped", async () => {
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
