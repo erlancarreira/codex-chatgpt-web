@@ -31,12 +31,12 @@ Goal: refactor CodexNative Web into a Web-only, backend-local, event-driven runt
 
 ## Phase 1 — domain event model
 
-- [ ] Add typed immutable turn events.
-- [ ] Add explicit turn states and terminal states.
-- [ ] Add deterministic reducer/state-transition rules.
-- [ ] Reject invalid state transitions explicitly.
-- [ ] Add monotonic event sequence support.
-- [ ] Add unit tests for valid/invalid transitions.
+- [x] Add typed immutable turn events.
+- [x] Add explicit turn states and terminal states.
+- [x] Add deterministic reducer/state-transition rules.
+- [x] Reject invalid state transitions explicitly.
+- [x] Add monotonic event sequence support.
+- [x] Add unit tests for valid/invalid transitions.
 
 Acceptance:
 - State transitions can be tested without browser, DOM, CDP, MCP or timers.
@@ -44,12 +44,12 @@ Acceptance:
 
 ## Phase 2 — per-request transport state
 
-- [ ] Add request-level transport model keyed by request id.
-- [ ] Track request lifecycle independently: sent/accepted/data/finished/failed.
-- [ ] Preserve response status, byte count, chunk count and terminal reason per request.
-- [ ] Add request correlation policy for the primary assistant transport.
-- [ ] Prevent auxiliary/retry requests from overwriting the primary request.
-- [ ] Add tests for 200 primary + 404 auxiliary, redirects, retries and aborted requests.
+- [x] Add request-level transport model keyed by request id.
+- [x] Track request lifecycle independently: sent/accepted/data/finished/failed.
+- [x] Preserve response status, byte count, chunk count and terminal reason per request.
+- [x] Add request correlation policy for the primary assistant transport.
+- [x] Prevent auxiliary/retry requests from overwriting the primary request.
+- [x] Add tests for 200 primary + 404 auxiliary, redirects, retries and aborted requests.
 
 Acceptance:
 - A secondary request can never corrupt the authoritative status of the primary stream.
@@ -57,13 +57,13 @@ Acceptance:
 
 ## Phase 3 — Turn Actor / mailbox
 
-- [ ] Add one actor/mailbox per turn.
-- [ ] Enforce single writer for turn state.
-- [ ] Add bounded queue semantics.
-- [ ] Coalesce high-frequency replaceable events such as DOM revisions/progress.
-- [ ] Preserve non-droppable terminal/tool/network events.
-- [ ] Add deterministic shutdown/cancellation.
-- [ ] Add actor tests including concurrent producers.
+- [x] Add one actor/mailbox per turn.
+- [x] Enforce single writer for turn state.
+- [x] Add bounded queue semantics.
+- [x] Coalesce high-frequency replaceable events such as DOM revisions/progress.
+- [x] Preserve non-droppable terminal/tool/network events.
+- [x] Add deterministic shutdown/cancellation.
+- [x] Add actor tests including concurrent producers.
 
 Acceptance:
 - CDP, DOM, MCP and launcher can publish concurrently without racing on turn state.
@@ -71,12 +71,12 @@ Acceptance:
 
 ## Phase 4 — browser/CDP adapter
 
-- [ ] Extract transport observation out of browser orchestration.
-- [ ] Convert Playwright request/response/requestfinished/requestfailed to typed events.
-- [ ] Convert CDP requestWillBeSent/responseReceived/dataReceived/loadingFinished/loadingFailed to typed events.
-- [ ] Correlate Playwright/CDP observations without double-counting.
-- [ ] Keep browser/session ownership independent from turn domain.
-- [ ] Add tests for navigation, 2xx+data+ERR_ABORTED and genuine pre-response failure.
+- [x] Extract transport observation out of browser orchestration.
+- [x] Convert Playwright request/response/requestfinished/requestfailed to typed events.
+- [x] Convert CDP requestWillBeSent/responseReceived/dataReceived/loadingFinished/loadingFailed to typed events.
+- [x] Correlate Playwright/CDP observations without double-counting.
+- [x] Keep browser/session ownership independent from turn domain.
+- [x] Add tests for navigation, 2xx+data+ERR_ABORTED and genuine pre-response failure.
 
 Acceptance:
 - Browser transport publishes events only; lifecycle decisions remain in Core.
@@ -95,21 +95,21 @@ Acceptance:
 
 ## Phase 6 — completion and failure policies
 
-- [ ] Centralize completion policy.
-- [ ] Centralize transport-failure classification.
-- [ ] Centralize retry/recovery policy.
-- [ ] Add explicit benign/recoverable/retryable/terminal classifications.
+- [x] Centralize completion policy.
+- [x] Centralize transport-failure classification.
+- [x] Centralize retry/recovery policy.
+- [x] Add explicit benign/recoverable/retryable/terminal classifications.
 - [ ] Remove scattered retry decisions from browser code where migrated.
-- [ ] Add bounded recovery budgets.
+- [x] Add bounded recovery budgets.
 - [ ] Add tests for known historical failures.
 
 Historical scenarios:
-- [ ] HTTP 200 + data + post-response `ERR_ABORTED`.
+- [x] HTTP 200 + data + post-response `ERR_ABORTED`.
 - [ ] Missing assistant DOM while network progresses.
 - [ ] Surface rebind during an active stream.
-- [ ] Secondary 404 after a valid primary response.
+- [x] Secondary 404 after a valid primary response.
 - [ ] Browser observation timeout.
-- [ ] Real transport failure before response/data.
+- [x] Real transport failure before response/data.
 
 ## Phase 7 — compaction engine isolation
 
@@ -198,3 +198,5 @@ Acceptance:
 
 - 2026-09-30 — Branch created. Architecture constraints and complete task plan recorded.
 - 2026-09-30 — Draft PR #1 opened. Remote baseline inspected: Playwright/CDP/MutationObserver are event sources, while the main browser orchestration still uses observation loops and distributed completion/retry decisions. Core migration seams identified.
+- 2026-09-30 — Phases 1–4 core foundations implemented: deterministic turn reducer, bounded single-writer actor, per-request transport state, CDP-primary/Playwright-fallback tracker, request correlation and regression coverage.
+- 2026-09-30 — Main response observation path converted from fixed 250 ms polling to DOM/MCP/network event wakes with a named watchdog only. Missing-assistant/stream-failure/stall decisions centralized in a pure lifecycle policy.
