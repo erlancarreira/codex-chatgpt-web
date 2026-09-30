@@ -478,6 +478,40 @@ test("a mutating stage timeout waits for abort cleanup before returning", async 
   expect(cleanupComplete).toBeTrue();
 });
 
+test("a mutating stage timeout bounds abort cleanup that ignores its signal", async () => {
+  let abortSeen = false;
+  const runStage = (ChatGptBrowserWorker.prototype as unknown as {
+    runStage<T>(
+      traceId: string,
+      stage: string,
+      timeoutMs: number,
+      action: (signal: AbortSignal) => Promise<T>,
+      clock: { suspendedMs(): number },
+      awaitAbortedActionSettlement: boolean,
+      abortedActionSettlementMs?: number,
+    ): Promise<T>;
+  }).runStage;
+
+  const startedAt = performance.now();
+  const result = runStage.call(
+    {},
+    "trace_cleanup_watchdog",
+    "prompt_attachment",
+    10,
+    async (signal) => {
+      await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      abortSeen = true;
+      return await new Promise<never>(() => {});
+    },
+    { suspendedMs: () => 0 },
+    true,
+    10,
+  );
+  await expect(result).rejects.toThrow("ChatGPT browser stage timed out: prompt_attachment");
+  expect(abortSeen).toBeTrue();
+  expect(performance.now() - startedAt).toBeLessThan(100);
+});
+
 test("a mutating stage timeout preserves a failed cleanup integrity error", async () => {
   let menuOpen = false;
   const personalized = { filter: () => personalized, count: async () => 0 };

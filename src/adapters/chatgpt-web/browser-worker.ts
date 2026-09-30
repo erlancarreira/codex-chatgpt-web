@@ -128,12 +128,14 @@ export const CHATGPT_WEB_TIMING_POLICIES = Object.freeze({
   responseDomGrace: defineTimingPolicy("response-dom-grace", "deadline", 60_000),
   networkDomSettle: defineTimingPolicy("network-dom-settle", "settle", 5_000),
   abortedStreamDomSettle: defineTimingPolicy("aborted-stream-dom-settle", "settle", 20_000),
+  abortedStageSettlement: defineTimingPolicy("aborted-stage-settlement", "settle", 20_000),
   eventWakeWatchdog: defineTimingPolicy("event-wake-watchdog", "watchdog", 5_000),
   browserObservationProbe: defineTimingPolicy("browser-observation-probe", "watchdog", 15_000),
 });
 export const CHATGPT_RESPONSE_DOM_GRACE_MS = CHATGPT_WEB_TIMING_POLICIES.responseDomGrace.timeoutMs;
 export const CHATGPT_NETWORK_DOM_SETTLE_MS = CHATGPT_WEB_TIMING_POLICIES.networkDomSettle.timeoutMs;
 export const CHATGPT_ABORTED_STREAM_DOM_SETTLE_MS = CHATGPT_WEB_TIMING_POLICIES.abortedStreamDomSettle.timeoutMs;
+export const CHATGPT_ABORTED_STAGE_SETTLEMENT_MS = CHATGPT_WEB_TIMING_POLICIES.abortedStageSettlement.timeoutMs;
 export const CHATGPT_EVENT_WATCHDOG_MS = CHATGPT_WEB_TIMING_POLICIES.eventWakeWatchdog.timeoutMs;
 /**
  * How long a staged Bigger Context part may take to produce its assistant turn. A staged part is two
@@ -2742,6 +2744,7 @@ export class ChatGptBrowserWorker {
     action: (abortSignal: AbortSignal) => Promise<T>,
     suspensionClock: Pick<ChatGptSuspensionClock, "suspendedMs"> = chatGptSuspensionClock,
     awaitAbortedActionSettlement = false,
+    abortedActionSettlementMs = CHATGPT_ABORTED_STAGE_SETTLEMENT_MS,
   ): Promise<T> {
     chatGptSuspensionClock.start();
     const startedAt = performance.now();
@@ -2775,12 +2778,25 @@ export class ChatGptBrowserWorker {
     } catch (error) {
       let surfacedError = error;
       if (stageTimedOut && awaitAbortedActionSettlement && actionPromise) {
-        try {
-          await actionPromise;
-        } catch (settlementError) {
-          if (settlementError instanceof ChatGptPersistentBrowserStateError) {
-            surfacedError = settlementError;
-          }
+        let settlementTimer: ReturnType<typeof setTimeout> | undefined;
+        const settlement = await Promise.race([
+          actionPromise.then(
+            () => ({ kind: "fulfilled" as const }),
+            settlementError => ({ kind: "rejected" as const, settlementError }),
+          ),
+          new Promise<{ kind: "timeout" }>(resolve => {
+            settlementTimer = setTimeout(() => resolve({ kind: "timeout" }), abortedActionSettlementMs);
+          }),
+        ]);
+        if (settlementTimer) clearTimeout(settlementTimer);
+        if (settlement.kind === "rejected"
+          && settlement.settlementError instanceof ChatGptPersistentBrowserStateError) {
+          surfacedError = settlement.settlementError;
+        } else if (settlement.kind === "timeout") {
+          void actionPromise.catch(() => {});
+          console.warn(
+            `[chatgpt-web] browser turn ${traceId} stage=${stage} abort settlement exceeded ${abortedActionSettlementMs}ms`,
+          );
         }
       }
       console.error(`[chatgpt-web] browser turn ${traceId} stage=${stage} failed durationMs=${Math.round(performance.now() - startedAt)}: ${surfacedError instanceof Error ? surfacedError.message : String(surfacedError)}`);
