@@ -1354,10 +1354,12 @@ test("large Markdown-rich context uses one plain-text editing command before exa
   }, dialogPage("").page, prompt, false);
 
   expect(calls[0]).toEqual(["fill", ""]);
-  expect(calls.filter(call => call[0] === "evaluate")).toEqual([["evaluate", prompt]]);
-  expect(calls.filter(call => call[0] === "evaluateOptions")).toEqual([
-    ["evaluateOptions", { timeout: 20_000 }],
-  ]);
+  const evaluateChunks = calls.filter(call => call[0] === "evaluate").map(call => call[1] as string);
+  expect(evaluateChunks.length).toBeGreaterThan(1);
+  expect(evaluateChunks.every(chunk => chunk.length <= 16_384)).toBeTrue();
+  expect(evaluateChunks.join("")).toBe(prompt);
+  expect(calls.filter(call => call[0] === "evaluateOptions").map(call => call[1]))
+    .toEqual(evaluateChunks.map(() => ({ timeout: 20_000 })));
   expect(asserted).toBe(prompt);
 });
 
@@ -1373,7 +1375,7 @@ test("plain-text editing command fails closed when the focused composer rejects 
   await expect(insertPromptText.call({
     activeComposer: async () => composer,
   }, {}, "literal `markdown`"))
-    .rejects.toThrow("rejected the plain-text editing command");
+    .rejects.toThrow("rejected plain-text chunk 1/1 after 0 characters");
 });
 
 test("compaction prompt attachment retries once only before submission evidence", async () => {

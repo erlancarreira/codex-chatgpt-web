@@ -137,6 +137,7 @@ export const CHATGPT_NETWORK_DOM_SETTLE_MS = CHATGPT_WEB_TIMING_POLICIES.network
 export const CHATGPT_ABORTED_STREAM_DOM_SETTLE_MS = CHATGPT_WEB_TIMING_POLICIES.abortedStreamDomSettle.timeoutMs;
 export const CHATGPT_ABORTED_STAGE_SETTLEMENT_MS = CHATGPT_WEB_TIMING_POLICIES.abortedStageSettlement.timeoutMs;
 export const CHATGPT_EVENT_WATCHDOG_MS = CHATGPT_WEB_TIMING_POLICIES.eventWakeWatchdog.timeoutMs;
+export const CHATGPT_COMPOSER_INSERT_CHUNK_CHARS = 16_384;
 /**
  * How long a staged Bigger Context part may take to produce its assistant turn. A staged part is two
  * orders of magnitude larger than an ordinary prompt and ChatGPT reads all of it before answering.
@@ -2577,6 +2578,27 @@ export function insertPlainTextIntoComposer(element: HTMLElement, value: string)
   return document.execCommand("insertText", false, value);
 }
 
+export function chatGptComposerInsertionChunks(
+  value: string,
+  maxChars = CHATGPT_COMPOSER_INSERT_CHUNK_CHARS,
+): string[] {
+  if (!Number.isSafeInteger(maxChars) || maxChars < 1) throw new Error("ChatGPT composer chunk size must be a positive safe integer");
+  if (value.length === 0) return [""];
+  const chunks: string[] = [];
+  let offset = 0;
+  while (offset < value.length) {
+    let end = Math.min(value.length, offset + maxChars);
+    if (end < value.length) {
+      const tail = value.charCodeAt(end - 1);
+      if (tail >= 0xD800 && tail <= 0xDBFF) end -= 1;
+    }
+    if (end <= offset) end = Math.min(value.length, offset + maxChars + 1);
+    chunks.push(value.slice(offset, end));
+    offset = end;
+  }
+  return chunks;
+}
+
 export class ChatGptBrowserWorker {
   static forProvider(provider: CodexProviderConfig): ChatGptBrowserWorker {
     const config = resolveBrowserConfig(provider);
@@ -3667,11 +3689,10 @@ export class ChatGptBrowserWorker {
       if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
         return element.value.trimStart();
       }
+      const connectorSelector = '[data-id^="plugin:"][data-keyword], [data-inline-selection-pill-cursor-target], [app-mention-path^="app://"][app-mention-display-name][contenteditable="false"]';
+      if (!element.querySelector(connectorSelector)) return (element.textContent ?? "").trimStart();
       const clone = element.cloneNode(true) as HTMLElement;
-      clone.querySelectorAll(
-        '[data-id^="plugin:"][data-keyword], [data-inline-selection-pill-cursor-target], [app-mention-path^="app://"][app-mention-display-name][contenteditable="false"]',
-      )
-        .forEach(part => part.remove());
+      clone.querySelectorAll(connectorSelector).forEach(part => part.remove());
       return [...clone.childNodes]
         .map(child => child.textContent ?? "")
         .join("\n")
@@ -4420,20 +4441,28 @@ export class ChatGptBrowserWorker {
     throwIfPromptAttachmentAborted(abortSignal);
     const composer = await this.activeComposer(page, 30_000, abortSignal);
     await composer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
-    // CDP Input.insertText is interpreted as live typing by ChatGPT's Lexical plugins. On a large
-    // JSON transport it can turn literal Markdown backticks into rich code nodes, remove the
-    // delimiters from textContent, and leave the next insertion outside the intended block. The
-    // browser's plain-text editing command updates the same focused contenteditable atomically
-    // without running those Markdown shortcuts. Exact readback below remains the authority.
-    const inserted = await composer.evaluate(insertPlainTextIntoComposer, text, {
-      timeout: 20_000,
-      signal: abortSignal,
-    });
-    throwIfPromptAttachmentAborted(abortSignal);
-    if (!inserted) {
-      throw new ChatGptPromptAttachmentIntegrityError(
-        "ChatGPT composer rejected the plain-text editing command",
-      );
+    // A single huge execCommand can monopolize ChatGPT's Lexical renderer long enough that
+    // Playwright cannot deliver its timeout/abort. Keep each synchronous page edit bounded and yield
+    // between chunks so Lexical can commit state and the outer stage remains interruptible.
+    const chunks = chatGptComposerInsertionChunks(text);
+    let insertedChars = 0;
+    for (let index = 0; index < chunks.length; index += 1) {
+      throwIfPromptAttachmentAborted(abortSignal);
+      const chunk = chunks[index]!;
+      const inserted = await composer.evaluate(insertPlainTextIntoComposer, chunk, {
+        timeout: 20_000,
+        signal: abortSignal,
+      });
+      throwIfPromptAttachmentAborted(abortSignal);
+      if (!inserted) {
+        throw new ChatGptPromptAttachmentIntegrityError(
+          `ChatGPT composer rejected plain-text chunk ${index + 1}/${chunks.length} after ${insertedChars} characters`,
+        );
+      }
+      insertedChars += chunk.length;
+      if (index + 1 < chunks.length) {
+        await withBrowserTurnAbort(new Promise(resolve => setTimeout(resolve, 0)), abortSignal);
+      }
     }
   }
 

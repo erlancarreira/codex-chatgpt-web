@@ -1,6 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { chromium } from "playwright-core";
-import { ChatGptBrowserWorker, insertPlainTextIntoComposer } from "../src/adapters/chatgpt-web/browser-worker";
+import {
+  CHATGPT_COMPOSER_INSERT_CHUNK_CHARS,
+  ChatGptBrowserWorker,
+  chatGptComposerInsertionChunks,
+  insertPlainTextIntoComposer,
+} from "../src/adapters/chatgpt-web/browser-worker";
 
 /**
  * The composer insert runs inside the page, where the caret state is whatever the last UI
@@ -50,6 +55,41 @@ function harness(options: {
   (globalThis as Record<string, unknown>).window = { getSelection: () => selection };
   return { composer: composer as unknown as HTMLElement, calls, selection, fakeDocument };
 }
+
+test("composer insertion chunks round-trip large text without splitting surrogate pairs", () => {
+  const pair = "\uD83D\uDE80";
+  const text = "a".repeat(CHATGPT_COMPOSER_INSERT_CHUNK_CHARS - 1) + pair
+    + "b".repeat(CHATGPT_COMPOSER_INSERT_CHUNK_CHARS + 23);
+  const chunks = chatGptComposerInsertionChunks(text);
+  expect(chunks.length).toBeGreaterThan(1);
+  expect(chunks.every(chunk => chunk.length <= CHATGPT_COMPOSER_INSERT_CHUNK_CHARS)).toBeTrue();
+  expect(chunks.join("")).toBe(text);
+  for (const chunk of chunks.slice(0, -1)) {
+    const tail = chunk.charCodeAt(chunk.length - 1);
+    expect(tail >= 0xD800 && tail <= 0xDBFF).toBeFalse();
+  }
+});
+
+test("large prompt insertion evaluates one bounded chunk at a time", async () => {
+  const chunks: string[] = [];
+  const composer = {
+    async focus() {},
+    async evaluate(_fn: unknown, chunk: string) {
+      chunks.push(chunk);
+      return true;
+    },
+  };
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    activeComposer(): Promise<typeof composer>;
+    insertPromptText(page: unknown, text: string, signal?: AbortSignal): Promise<void>;
+  };
+  worker.activeComposer = async () => composer;
+  const text = "context\n".repeat(CHATGPT_COMPOSER_INSERT_CHUNK_CHARS);
+  await worker.insertPromptText({}, text);
+  expect(chunks.length).toBeGreaterThan(1);
+  expect(chunks.every(chunk => chunk.length <= CHATGPT_COMPOSER_INSERT_CHUNK_CHARS)).toBeTrue();
+  expect(chunks.join("")).toBe(text);
+});
 
 test("places the caret itself when focus has not yet produced one in the composer", () => {
   // A focusable composer may be ready before the browser has placed a caret inside it.
