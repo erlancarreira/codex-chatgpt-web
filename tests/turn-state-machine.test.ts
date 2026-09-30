@@ -56,12 +56,19 @@ test("benign and recoverable transport failures do not terminate a proven turn",
   state = apply(state, "transport", {
     type: "transport_failed", at: 5, requestId: "r1", classification: "benign", reason: "net::ERR_ABORTED",
   });
-  expect(state.phase).toBe("streaming");
+  expect(state.phase).toBe("finalizing");
+  expect(state.transportFinished).toBeTrue();
   expect(state.lastTransportFailure?.classification).toBe("benign");
-  state = apply(state, "transport", {
-    type: "transport_failed", at: 6, requestId: "r1", classification: "recoverable", reason: "renderer navigation",
+});
+
+test("runtime failures are terminal from any active phase", () => {
+  let state = createTurnState();
+  state = apply(state, "runtime", { type: "prepare", at: 1 });
+  state = apply(state, "runtime", { type: "fail", at: 2, reason: "DOM invariant failed" });
+  expect(state).toMatchObject({
+    phase: "failed",
+    terminal: { phase: "failed", sequence: 2, reason: "DOM invariant failed" },
   });
-  expect(state.phase).toBe("streaming");
 });
 
 test("terminal failures, cancellation and deadlines are terminal", () => {
