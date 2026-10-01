@@ -2493,6 +2493,29 @@ class BrowserHost {
     return { surfaceId: tab.surfaceId, tabId: tab.id, reused: false, connectorBound: false };
   }
 
+  async replaceTurnSurface(traceId, helperPid, reveal, signal) {
+    signal?.throwIfAborted();
+    const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
+    if (!tab) throw new Error(`Browser turn ownership mismatch: no browser tab owns ${traceId}`);
+    if (tab.interactionMode !== "automatic") throw new Error("Only Automatic turns can replace their browser surface");
+    if (tab.helperPid !== helperPid) {
+      throw new Error(`Browser helper ownership mismatch: expected ${tab.helperPid}, received ${helperPid}`);
+    }
+    if (tab.status !== "running") throw new Error(`Browser turn ${traceId} is not running`);
+    const previousTabId = tab.id;
+    const conversationKey = tab.conversationKey;
+    const connectorIdentity = tab.connectorIdentity;
+    this.removeTurnTab(tab, false);
+    const replacement = await this.createTurnTab(traceId, helperPid, conversationKey, connectorIdentity, signal);
+    this.selectedTabId = replacement.id;
+    if (reveal) this.show();
+    else this.syncViewVisibility();
+    this.publishState?.(this.snapshot());
+    this.writeDescriptor();
+    this.logger.warn("browser.tab_replaced", { previousTabId, tabId: replacement.id, traceId });
+    return { surfaceId: replacement.surfaceId, tabId: replacement.id, reused: false, connectorBound: false };
+  }
+
   async endTurn(
     traceId,
     helperPid,

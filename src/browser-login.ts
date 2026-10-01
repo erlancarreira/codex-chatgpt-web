@@ -168,7 +168,7 @@ async function inspectStoredState(
 ): Promise<ChatGptWebAccountCapabilities & { url: string }> {
   const verifierBrowser = await chromium.launch({
     executablePath: config.chromeExecutablePath,
-    headless: false,
+    headless: true,
     ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
     args: ["--no-first-run", "--no-default-browser-check"],
   });
@@ -424,69 +424,109 @@ export async function importBrowserLoginStorageState(
   };
 }
 
+async function waitForLoginDevToolsEndpoint(
+  profileDir: string,
+  browser: ChildProcess,
+  timeoutMs: number,
+): Promise<string> {
+  const activePortPath = join(profileDir, "DevToolsActivePort");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (browserProcessExited(browser)) {
+      throw new Error("The dedicated browser exited before ChatGPT sign-in completed");
+    }
+    if (existsSync(activePortPath)) {
+      const [port] = readFileSync(activePortPath, "utf8").trim().split(/\r?\n/);
+      if (port && /^\d+$/.test(port)) return `http://127.0.0.1:${port}`;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for the dedicated browser login session");
+}
+
 export async function loginToChatGpt(
   config: AppConfig,
   options: { timeoutMs?: number } = {},
 ): Promise<BrowserLoginResult> {
   if (!existsSync(config.chromeExecutablePath)) {
-    throw new Error(`Google Chrome was not found at ${config.chromeExecutablePath}. Pass --chrome with its executable path.`);
+    throw new Error(`Configured Chromium browser was not found at ${config.chromeExecutablePath}. Pass --chrome with its executable path.`);
   }
+  const timeoutMs = options.timeoutMs ?? SYSTEM_LOGIN_TIMEOUT_MS;
   const profileDir = join(dirname(config.storageStatePath), "login-profile");
   mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+  rmSync(join(profileDir, "DevToolsActivePort"), { force: true });
   process.stdout.write(
-    "A normal Chrome window is open. Sign in to ChatGPT, confirm that the composer is visible, then quit this dedicated Chrome instance completely.\n",
+    "A dedicated browser window is open. Sign in to ChatGPT; CodexNative will return automatically after the session is verified.\n",
   );
   const loginBrowser = spawn(config.chromeExecutablePath, [
     `--user-data-dir=${profileDir}`,
     "--new-window",
     "--disable-background-mode",
+    "--remote-debugging-address=127.0.0.1",
+    "--remote-debugging-port=0",
     "--no-first-run",
     "--no-default-browser-check",
     CHATGPT_TEMPORARY_CHAT_URL,
   ], { env: process.env, stdio: "ignore" });
-  const loginExit = await new Promise<number>((resolveExit, rejectExit) => {
-    loginBrowser.once("error", rejectExit);
-    loginBrowser.once("exit", (code, signal) => {
-      if (signal) rejectExit(new Error(`Normal Chrome login window exited from signal ${signal}`));
-      else resolveExit(code ?? 1);
-    });
-  });
-  if (loginExit !== 0) throw new Error(`Normal Chrome login window exited with status ${loginExit}`);
 
-  const context = await chromium.launchPersistentContext(profileDir, {
-    executablePath: config.chromeExecutablePath,
-    headless: false,
-    ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
-    args: ["--no-first-run", "--no-default-browser-check"],
-  });
+  let cdpBrowser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | undefined;
   try {
-    const page = context.pages()[0] ?? await context.newPage();
-    await page.goto(CHATGPT_TEMPORARY_CHAT_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: 60_000,
-    });
-    const composer = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first();
-    try {
-      await composer.waitFor({ state: "visible", timeout: options.timeoutMs ?? 60_000 });
-    } catch {
-      throw new Error("The authenticated ChatGPT page did not produce a visible composer");
-    }
-    await assertAuthenticatedChatGptPage(page);
-    await assertTemporaryChatPage(page);
-    const state = await context.storageState();
+    const endpoint = await waitForLoginDevToolsEndpoint(profileDir, loginBrowser, timeoutMs);
+    cdpBrowser = await chromium.connectOverCDP(endpoint, { timeout: Math.min(timeoutMs, 30_000) });
+    const context = cdpBrowser.contexts()[0];
+    if (!context) throw new Error("The dedicated browser exposed no persistent context");
 
-    const inspected = await inspectStoredState(config, state);
+    let page = context.pages().find(candidate => candidate.url().startsWith(CHATGPT_ORIGIN))
+      ?? context.pages()[0]
+      ?? await context.newPage();
+    if (!page.url().startsWith(CHATGPT_ORIGIN)) {
+      await page.goto(CHATGPT_TEMPORARY_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    }
+
+    const authDeadline = Date.now() + timeoutMs;
+    while (true) {
+      try {
+        await assertAuthenticatedChatGptPage(page);
+        break;
+      } catch (error) {
+        if (browserProcessExited(loginBrowser)) {
+          throw new Error("The dedicated browser exited before ChatGPT sign-in completed", { cause: error });
+        }
+        if (Date.now() >= authDeadline) {
+          throw new Error(
+            `Timed out waiting for ChatGPT sign-in: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
+          );
+        }
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    }
+
+    if (page.url() !== CHATGPT_TEMPORARY_CHAT_URL) {
+      await page.goto(CHATGPT_TEMPORARY_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first()
+        .waitFor({ state: "visible", timeout: 60_000 });
+      await assertAuthenticatedChatGptPage(page);
+    }
+    await assertTemporaryChatPage(page);
+
+    const state = await context.storageState();
+    const capabilities = await detectChatGptAccountCapabilities(page);
+    mkdirSync(dirname(config.storageStatePath), { recursive: true, mode: 0o700 });
     atomicWriteFile(config.storageStatePath, `${JSON.stringify(state)}\n`);
-    writeVerificationMarker(config.storageStatePath, inspected);
+    writeVerificationMarker(config.storageStatePath, capabilities);
     return {
       storageStatePath: config.storageStatePath,
       accountSurfaceUrl: page.url(),
-      solAvailable: inspected.solAvailable,
-      extraHighAvailable: inspected.extraHighAvailable === true,
-      proAvailable: inspected.proAvailable,
+      solAvailable: capabilities.solAvailable,
+      extraHighAvailable: capabilities.extraHighAvailable === true,
+      proAvailable: capabilities.proAvailable,
     };
   } finally {
-    await context.close();
+    await cdpBrowser?.close().catch(() => {});
+    if (!browserProcessExited(loginBrowser)) {
+      await stopOwnedLoginBrowser(loginBrowser).catch(() => {});
+    }
     if (browserLoginStateExists(config)) rmSync(profileDir, { recursive: true, force: true });
   }
 }

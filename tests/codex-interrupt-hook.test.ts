@@ -9,9 +9,40 @@ import {
   installCodexInterruptHook,
   installCodexInterruptHookCommand,
   restoreCodexInterruptHook,
+  restoreOrphanedManagedCodexInterruptHook,
   verifyCodexInterruptHook,
   verifyCodexInterruptHookRestored,
 } from "../src/codex-interrupt-hook";
+
+test("strictly restores one intact orphaned managed interrupt hook", () => {
+  const original = 'model = "example"\n';
+  const configPath = resolve(tmpdir(), "codex-orphan-hook", "config.toml");
+  const installed = installCodexInterruptHookCommand(original, configPath, "bridge-hook");
+
+  const restored = restoreOrphanedManagedCodexInterruptHook(installed.text, configPath);
+
+  expect(Bun.TOML.parse(restored)).toEqual(Bun.TOML.parse(original));
+  verifyCodexInterruptHookRestored(restored);
+});
+
+test("orphaned hook migration refuses wrong ownership, changed trust, and duplicate markers", () => {
+  const original = 'model = "example"\n';
+  const configPath = resolve(tmpdir(), "codex-orphan-hook-strict", "config.toml");
+  const installed = installCodexInterruptHookCommand(original, configPath, "bridge-hook");
+
+  expect(() => restoreOrphanedManagedCodexInterruptHook(
+    installed.text,
+    resolve(tmpdir(), "other-codex", "config.toml"),
+  )).toThrow("does not belong uniquely");
+  expect(() => restoreOrphanedManagedCodexInterruptHook(
+    installed.text.replace(installed.installed.trustedHash, "sha256:" + "0".repeat(64)),
+    configPath,
+  )).toThrow("trust hash is invalid");
+  expect(() => restoreOrphanedManagedCodexInterruptHook(
+    installed.text + "\n" + MANAGED_INTERRUPT_HOOK_END + "\n",
+    configPath,
+  )).toThrow("incomplete or duplicated");
+});
 
 test("preserves hook ownership across native TOML command quoting and inline array serialization", () => {
   const original = 'model = "example"\n\n[mcp_servers.notes]\ncommand = "user-mcp"\n';

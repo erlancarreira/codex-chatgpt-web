@@ -284,6 +284,46 @@ function canonicalJson(value: unknown): string {
 }
 
 describe("ChatGPT outer-native harness v4", () => {
+  test("structured sign-in failure escapes the adapter before a terminal error event", async () => {
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://auth-recovery-adapter-" + Date.now() + "-" + Math.random(),
+      chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    const events: AdapterEvent[] = [];
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async () => {
+      throw new ChatGptWebAdapterError("ChatGPT requested sign-in.", {
+        status: 401,
+        errorType: "authentication_error",
+        code: "chatgpt_sign_in_required",
+        retryable: false,
+      });
+    };
+
+    try {
+      const request = rawWireRequest(environmentXml);
+      request.context.tools = [];
+      await expect(
+        createChatGptWebAdapter(provider).runTurn!(
+          request,
+          { headers: new Headers() },
+          event => events.push(event),
+        ),
+      ).rejects.toMatchObject({
+        status: 401,
+        errorType: "authentication_error",
+        code: "chatgpt_sign_in_required",
+      });
+      expect(events[0]).toEqual({ type: "heartbeat" });
+      expect(events.some(event => event.type === "error")).toBeFalse();
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      chatGptTurnSessions.clear();
+    }
+  });
+
   test("extracts authoritative environment, tool registry, and turn identity from the Codex wire envelope", () => {
     const request = rawWireRequest(environmentXml);
     expect(extractChatGptTurnEnvironment(request)).toEqual({
@@ -3480,6 +3520,61 @@ describe("ChatGPT outer-native harness v4", () => {
       await client.close().catch(() => {});
       if (timedOutToken) broker.revoke(timedOutToken);
       if (replacementToken) broker.revoke(replacementToken);
+      await broker.close();
+    }
+  }, 10_000);
+
+  test("retiring an idle MCP binding lets the browser final answer finish", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-idle-retire-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://idle-retirement-${Date.now()}`,
+      chatgptWeb: {
+        brokerSocketPath: socketPath,
+        localToolsEnabled: true,
+        solAvailable: true,
+        extraHighAvailable: true, proAvailable: true,
+      },
+    };
+    const broker = TurnBroker.forSocket(socketPath);
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let observedAbort = false;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      const prepared = await turn.prepare();
+      try {
+        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        if (!token) throw new Error("missing test turn token");
+        turn.onSubmitted?.();
+        const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+        await callTurnBroker(socketPath, { method: "release", bindingId: claimed.bindingId });
+        await Bun.sleep(20);
+        observedAbort = turn.abortSignal?.aborted === true;
+        turn.onTextDelta("final after idle retirement");
+        return "final after idle retirement";
+      } finally {
+        prepared.release();
+      }
+    };
+
+    const events: AdapterEvent[] = [];
+    try {
+      await createChatGptWebAdapter(provider, { broker }).runTurn!(
+        rawWireRequest(environmentXml),
+        { headers: new Headers() },
+        event => events.push(event),
+      );
+      expect(observedAbort).toBeFalse();
+      expect(events.some(event => event.type === "text_delta"
+        && event.text.includes("final after idle retirement"))).toBeTrue();
+      expect(events.at(-1)).toMatchObject({
+        type: "done",
+        stopReason: "stop",
+        endTurn: true,
+      });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      chatGptTurnSessions.clear();
       await broker.close();
     }
   }, 10_000);

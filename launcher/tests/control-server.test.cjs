@@ -264,6 +264,19 @@ test("browser control server authenticates and owns turn visibility", async () =
   }
 });
 
+test("browser control server replaces an owned turn surface", async () => {
+  let args;
+  const host = { replaceTurnSurface: (...value) => { args = value; return { surfaceId: "r".repeat(32), tabId: "fresh", reused: false, connectorBound: false }; } };
+  const server = await new BrowserControlServer({ logger: { info() {}, warn() {}, error() {} }, getBrowserHost: () => host, getPreferences: () => ({ showBrowserDuringTurns: false }) }).start();
+  const descriptor = server.descriptor();
+  try {
+    const response = await fetch(`${descriptor.endpoint}/v1/turn/replace`, { method: "POST", headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" }, body: JSON.stringify({ phase: "replace", traceId: "abcdef123456", helperPid: process.pid }) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, surfaceId: "r".repeat(32), tabId: "fresh", reused: false, connectorBound: false, trackUsage: false });
+    assert.equal(args[0], "abcdef123456"); assert.equal(args[1], process.pid); assert.equal(args[2], false); assert.ok(args[3] instanceof AbortSignal); assert.equal(args[3].aborted, false);
+  } finally { await server.close(); }
+});
+
 test("browser control server withholds a new turn lease until its browser surface is ready", async () => {
   let releaseSurface;
   let reportBegin;

@@ -331,6 +331,64 @@ function locateCodexInterruptHook(text: string, installed: InstalledCodexInterru
   return merged;
 }
 
+export function restoreOrphanedManagedCodexInterruptHook(
+  text: string,
+  configPath: string,
+): string {
+  const startCount = managedMarkerCount(text);
+  const endCount = text.split(MANAGED_INTERRUPT_HOOK_END).length - 1;
+  if (startCount === 0 && endCount === 0) return text;
+  if (startCount !== 1 || endCount !== 1) {
+    throw new Error("Orphaned Codex interrupt lifecycle hook markers are incomplete or duplicated");
+  }
+
+  const document = parseHookDocument(text);
+  const groups = document.hooks?.Interrupt;
+  const state = document.hooks?.state;
+  if (!Array.isArray(groups) || !state || typeof state !== "object") {
+    throw new Error("Orphaned Codex interrupt lifecycle hook has no valid hook/state structure");
+  }
+
+  const canonical = canonicalConfigPath(configPath);
+  const candidates = groups.flatMap((group, groupIndex) => {
+    const stateKey = `${canonical}:interrupt:${groupIndex}:0`;
+    const trusted = state[stateKey] as { trusted_hash?: unknown } | undefined;
+    if (!trusted || typeof trusted.trusted_hash !== "string") return [];
+    const hooks = group && typeof group === "object" && !Array.isArray(group)
+      ? (group as { hooks?: unknown }).hooks
+      : undefined;
+    if (!Array.isArray(hooks) || hooks.length !== 1) return [];
+    const hook = hooks[0];
+    if (!hook || typeof hook !== "object" || Array.isArray(hook)) return [];
+    const commandHook = hook as { type?: unknown; command?: unknown; timeout?: unknown };
+    if (commandHook.type !== "command"
+      || typeof commandHook.command !== "string"
+      || commandHook.timeout !== 3) return [];
+    return [{
+      command: commandHook.command,
+      groupIndex,
+      stateKey,
+      trustedHash: trusted.trusted_hash,
+    }];
+  });
+  if (candidates.length !== 1) {
+    throw new Error("Orphaned Codex interrupt lifecycle hook does not belong uniquely to the active config");
+  }
+
+  const candidate = candidates[0]!;
+  if (codexInterruptHookHash(candidate.command) !== candidate.trustedHash) {
+    throw new Error("Orphaned Codex interrupt lifecycle hook trust hash is invalid");
+  }
+
+  const start = text.indexOf(MANAGED_INTERRUPT_HOOK_START);
+  const end = text.indexOf(MANAGED_INTERRUPT_HOOK_END);
+  if (start < 0 || end < start) {
+    throw new Error("Orphaned Codex interrupt lifecycle hook marker order is invalid");
+  }
+  const fragment = text.slice(start, end + MANAGED_INTERRUPT_HOOK_END.length);
+  return restoreCodexInterruptHook(text, { ...candidate, fragment });
+}
+
 export function verifyCodexInterruptHook(text: string, installed: InstalledCodexInterruptHook): void {
   locateCodexInterruptHook(text, installed);
 }

@@ -410,6 +410,11 @@ export type LauncherTurnActivity =
       requireRetainedConversation?: boolean;
     }
   | {
+      phase: "replace";
+      traceId: string;
+      helperPid: number;
+    }
+  | {
       phase: "heartbeat";
       traceId: string;
       helperPid: number;
@@ -700,7 +705,7 @@ export async function notifyLauncherTurn(
       throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
     }
     const body = await response.json().catch(() => ({})) as Record<string, unknown>;
-    if (activity.phase === "start") {
+    if (activity.phase === "start" || activity.phase === "replace") {
       if (typeof body.surfaceId !== "string" || !/^[A-Za-z0-9_-]{32}$/.test(body.surfaceId)) {
         throw new Error("Launcher browser control channel returned an invalid turn surface id");
       }

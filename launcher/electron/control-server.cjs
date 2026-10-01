@@ -96,6 +96,7 @@ class BrowserControlServer {
       return;
     }
     const isTurn = request.url === "/v1/turn/start"
+      || request.url === "/v1/turn/replace"
       || request.url === "/v1/turn/heartbeat"
       || request.url === "/v1/turn/usage"
       || request.url === "/v1/turn/end";
@@ -338,6 +339,27 @@ class BrowserControlServer {
           response.off("close", onClose);
         }
         this.logger.info("browser.turn_started", { traceId: body.traceId });
+        writeJson(response, 200, { ok: true, ...lease, trackUsage: this.limits?.enabled() === true });
+        return;
+      } else if (request.url === "/v1/turn/replace") {
+        const acquisition = new AbortController();
+        const onClose = () => {
+          if (!response.writableFinished) acquisition.abort(new Error("Browser turn replacement caller disconnected"));
+        };
+        response.once("close", onClose);
+        let lease;
+        try {
+          if (response.destroyed) onClose();
+          lease = await host.replaceTurnSurface(
+            body.traceId,
+            body.helperPid,
+            preferences.showBrowserDuringTurns === true,
+            acquisition.signal,
+          );
+        } finally {
+          response.off("close", onClose);
+        }
+        this.logger.warn("browser.turn_surface_replaced", { traceId: body.traceId });
         writeJson(response, 200, { ok: true, ...lease, trackUsage: this.limits?.enabled() === true });
         return;
       } else if (request.url === "/v1/turn/heartbeat") {

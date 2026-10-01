@@ -50,16 +50,14 @@ export function decideMissingAssistant(
         ? input.abortedStreamDomSettleMs
         : input.networkDomSettleMs
     );
-    if (input.now >= settleDeadline) {
-      return {
-        kind: "fail",
-        code: "browser_response_dom_missing",
-        status: 502,
-        retryable: true,
-        message: "ChatGPT completed the response stream, but its assistant turn was not available in the browser DOM.",
-      };
+    // A same-turn DOM rebind refreshes responseDeadline. Respect that fresh grace window
+    // even when the transport completed earlier; otherwise the stale completedAt timestamp
+    // immediately retriggers recovery and exhausts the rebind budget in a tight loop.
+    const effectiveDeadline = Math.max(settleDeadline, input.responseDeadline);
+    if (input.now >= effectiveDeadline) {
+      return { kind: "recover", reason: "assistant_dom_missing" };
     }
-    return { kind: "wait", reason: "network_dom_settle", until: settleDeadline };
+    return { kind: "wait", reason: "network_dom_settle", until: effectiveDeadline };
   }
 
   if (input.externalProgressLive) {

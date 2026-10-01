@@ -1428,7 +1428,9 @@ test.each([false, true])("structured compact rebuilds canonical context when its
     expect(turn.conversationKey).toBeUndefined();
     expect(turn.compaction).toBeTrue();
     const prepared = await turn.prepare();
-    const contextText = prepared.multipart?.parts.join("\n") ?? prepared.text;
+    const contextText = prepared.multipart?.parts.join("\n")
+      ?? prepared.skillFiles?.map(file => file.text).join("\n")
+      ?? prepared.text;
     expect(contextText).toContain("Original task");
     expect(contextText).toContain("Continue with the next step");
     if (experimentalBiggerContext) {
@@ -1733,7 +1735,8 @@ test.each([false, true])("structured compact rebuild after retained browser loss
     browserStarts += 1;
     if (turn.requireRetainedConversation) throw chatGptRetainedConversationUnavailableError();
     const prepared = await turn.prepare();
-    expect(prepared.text).toContain("Original task");
+    const contextText = prepared.skillFiles?.map(file => file.text).join("\n") ?? prepared.text;
+    expect(contextText).toContain("Original task");
     prepared.release();
     if (rateLimited) throw new ChatGptWebAdapterError("ChatGPT rate limit: too many requests.", {
       status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: false,

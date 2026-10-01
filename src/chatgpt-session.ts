@@ -250,10 +250,110 @@ export async function resolveChatGptComposer(page: Page): Promise<Locator | unde
   );
 }
 
+export class ChatGptAuthenticationRequiredError extends Error {
+  constructor(message = "The ChatGPT browser session is signed out. Sign in again before continuing.") {
+    super(message);
+    this.name = "ChatGptAuthenticationRequiredError";
+  }
+}
+
+export class ChatGptSessionVerificationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatGptSessionVerificationError";
+  }
+}
+
+type ChatGptAuthSessionProbe =
+  | { kind: "authenticated" }
+  | { kind: "signed_out" }
+  | { kind: "verification_failed"; status?: number; timedOut?: boolean };
+
+async function probeAuthenticatedChatGptSession(page: Page): Promise<ChatGptAuthSessionProbe> {
+  return page.evaluate(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const response = await fetch("/api/auth/session", {
+        credentials: "same-origin",
+        cache: "no-store",
+        redirect: "error",
+        headers: { accept: "application/json" },
+        signal: controller.signal,
+      });
+      const url = new URL(response.url);
+      if (url.origin !== "https://chatgpt.com" || url.pathname !== "/api/auth/session") {
+        return { kind: "verification_failed" as const, status: response.status };
+      }
+      if (response.status === 401) return { kind: "signed_out" as const };
+      if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) {
+        return { kind: "verification_failed" as const, status: response.status };
+      }
+      const payload: unknown = await response.json();
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return { kind: "verification_failed" as const, status: response.status };
+      }
+      const session = payload as {
+        user?: unknown;
+        error?: unknown;
+        expires?: unknown;
+      };
+      const user = session.user;
+      const userPresent = Boolean(
+        user
+        && typeof user === "object"
+        && !Array.isArray(user)
+        && Object.keys(user).length > 0,
+      );
+      const errorClear = session.error === undefined || session.error === null || session.error === "";
+      const expiresValid = session.expires === undefined || session.expires === null
+        || (typeof session.expires === "string"
+          && Number.isFinite(Date.parse(session.expires))
+          && Date.parse(session.expires) > Date.now());
+      return userPresent && errorClear && expiresValid
+        ? { kind: "authenticated" as const }
+        : { kind: "signed_out" as const };
+    } catch {
+      return {
+        kind: "verification_failed" as const,
+        timedOut: controller.signal.aborted,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+}
+
 export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> {
   if (!await resolveChatGptComposer(page)) {
-    throw new Error("ChatGPT authentication could not be verified: no visible composer is present");
+    throw new ChatGptSessionVerificationError(
+      "ChatGPT authentication could not be verified: no visible composer is present",
+    );
   }
+  let origin: string;
+  try {
+    origin = new URL(page.url()).origin;
+  } catch {
+    throw new ChatGptSessionVerificationError("ChatGPT authentication could not be verified: invalid page URL");
+  }
+  if (origin !== "https://chatgpt.com") {
+    throw new ChatGptSessionVerificationError(
+      "ChatGPT authentication could not be verified outside chatgpt.com",
+    );
+  }
+  const probe = await probeAuthenticatedChatGptSession(page);
+  if (probe.kind === "authenticated") return;
+  if (probe.kind === "signed_out") throw new ChatGptAuthenticationRequiredError();
+  if (probe.timedOut) {
+    throw new ChatGptSessionVerificationError(
+      "ChatGPT session verification timed out. Reload ChatGPT and retry.",
+    );
+  }
+  throw new ChatGptSessionVerificationError(
+    probe.status
+      ? `ChatGPT session verification failed (HTTP ${probe.status}). Reload ChatGPT and retry.`
+      : "ChatGPT session verification failed. Reload ChatGPT and retry.",
+  );
 }
 
 export async function assertTemporaryChatPage(page: Page): Promise<void> {

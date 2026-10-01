@@ -211,13 +211,21 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
     }
 
     case "transport_data": {
-      requirePhase(state, event, ["accepted", "streaming", "waiting_tool", "tool_running"]);
+      requirePhase(state, event, ["accepted", "streaming", "waiting_tool", "tool_running", "finalizing"]);
       assertRequestId(event.requestId);
-      if (state.primaryRequestId !== event.requestId) {
-        throw new InvalidTurnTransitionError(state.phase, event.type, "Transport data does not belong to the primary request");
-      }
       if (!Number.isSafeInteger(event.bytes) || event.bytes <= 0) {
         throw new Error("Turn transport data event requires a positive safe-integer byte count");
+      }
+      if (state.phase === "finalizing") {
+        // CDP/Network events can arrive after the primary response has already finished and the turn
+        // has entered finalization. They are observationally late: consume them without reopening the
+        // turn or allowing an auxiliary request to replace the primary response ownership.
+        return withSequence(state, input, state.primaryRequestId === event.requestId
+          ? { hasTransportData: true }
+          : {});
+      }
+      if (state.primaryRequestId !== event.requestId) {
+        throw new InvalidTurnTransitionError(state.phase, event.type, "Transport data does not belong to the primary request");
       }
       return withSequence(state, input, {
         phase: state.phase === "waiting_tool" || state.phase === "tool_running" ? state.phase : "streaming",
@@ -226,10 +234,14 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
     }
 
     case "transport_finished": {
-      requirePhase(state, event, ["accepted", "streaming", "waiting_tool", "tool_running"]);
+      requirePhase(state, event, ["accepted", "streaming", "waiting_tool", "tool_running", "finalizing"]);
       assertRequestId(event.requestId);
       if (state.primaryRequestId !== event.requestId) {
-        throw new InvalidTurnTransitionError(state.phase, event.type, "Finished request is not the primary request");
+        // Auxiliary/observability requests may finish after the primary ChatGPT response has already
+        // been selected. Their completion is monotonic but must never replace or finish the primary
+        // request. Consume the sequenced event as a no-op so a harmless late Network.loadingFinished
+        // cannot tear down the entire Codex turn.
+        return withSequence(state, input, {});
       }
       return withSequence(state, input, {
         transportFinished: true,
@@ -281,7 +293,7 @@ export function reduceTurnState(state: TurnState, input: SequencedTurnEvent): Tu
       // submission. It may race ahead of CDP responseReceived, so "submitted" is a valid
       // entry point. A later transport_accepted event fills request identity/status without
       // disturbing the active tool phase.
-      requirePhase(state, event, ["preparing", "submitted", "accepted", "streaming"]);
+      requirePhase(state, event, ["preparing", "submitted", "accepted", "streaming", "finalizing"]);
       const callIds = uniqueIds(event.callIds);
       if (callIds.length === 0) throw new Error("Tool request event requires at least one call");
       if (state.activeToolCalls.length > 0) {

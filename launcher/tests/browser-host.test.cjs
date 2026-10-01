@@ -2520,6 +2520,24 @@ test("a failed runtime cancellation keeps the running DOM attached", async () =>
   assert.deepEqual(closed, []);
 });
 
+test("a running Automatic turn replaces a broken running surface", async () => {
+  const signal = new AbortController().signal;
+  const old = { id: "old", traceId: "trace_replace", helperPid: 222, status: "running", interactionMode: "automatic", conversationKey: "a".repeat(64), connectorIdentity: "Codex Native2" };
+  const fresh = { id: "fresh", surfaceId: "surface-fresh" };
+  const calls = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([[old.id, old]]), selectedTabId: old.id,
+    removeTurnTab: (tab, abortRunning) => { assert.equal(tab, old); assert.equal(abortRunning, false); calls.push("removed"); },
+    createTurnTab: async (...args) => { assert.deepEqual(args, ["trace_replace", 222, "a".repeat(64), "Codex Native2", signal]); calls.push("created"); return fresh; },
+    syncViewVisibility: () => calls.push("visible"), snapshot: () => ({}), publishState: () => calls.push("published"), writeDescriptor: () => calls.push("descriptor"),
+    logger: { warn: (event) => calls.push(event) },
+  });
+  const lease = await BrowserHost.prototype.replaceTurnSurface.call(fixture, "trace_replace", 222, false, signal);
+  assert.deepEqual(lease, { surfaceId: "surface-fresh", tabId: "fresh", reused: false, connectorBound: false });
+  assert.equal(fixture.selectedTabId, "fresh");
+  assert.deepEqual(calls, ["removed", "created", "visible", "published", "descriptor", "browser.tab_replaced"]);
+});
+
 test("a later provider round reuses only its exact connector-bound conversation", async () => {
   const throttling = [];
   const conversationKey = "a".repeat(64);

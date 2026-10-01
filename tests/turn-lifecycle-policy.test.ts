@@ -59,7 +59,33 @@ test("completed 2xx transport gets a bounded renderer settle window", () => {
       completed: true,
       completedAt: 10_000,
     }),
-  })).toMatchObject({ kind: "fail", code: "browser_response_dom_missing" });
+  })).toEqual({ kind: "recover", reason: "assistant_dom_missing" });
+});
+
+test("completed transport respects a refreshed DOM recovery deadline", () => {
+  expect(decideMissingAssistant({
+    ...base,
+    now: 16_000,
+    responseDeadline: 20_000,
+    network: network({
+      responseSeen: true,
+      responseStatus: 200,
+      completed: true,
+      completedAt: 10_000,
+    }),
+  })).toEqual({ kind: "wait", reason: "network_dom_settle", until: 20_000 });
+
+  expect(decideMissingAssistant({
+    ...base,
+    now: 20_000,
+    responseDeadline: 20_000,
+    network: network({
+      responseSeen: true,
+      responseStatus: 200,
+      completed: true,
+      completedAt: 10_000,
+    }),
+  })).toEqual({ kind: "recover", reason: "assistant_dom_missing" });
 });
 
 test("benign post-response abort receives the longer renderer settle window", () => {

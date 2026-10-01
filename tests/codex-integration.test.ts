@@ -18,6 +18,7 @@ import {
   uninstallCodexIntegration,
 } from "../src/codex-integration";
 import { defaultConfig, loadConfig, saveConfig } from "../src/config";
+import { installCodexInterruptHook } from "../src/codex-interrupt-hook";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
   MANAGED_COMMENT,
@@ -127,6 +128,68 @@ describe("reversible native Codex route integration", () => {
       expect(() => preflightCodexIntegration(nativeConfig("browser-only"))).toThrow();
       expect(lstatSync(alias).isSymbolicLink()).toBe(true);
     }
+  });
+
+  test("reinstalls safely when a managed hook survives without a multi-home journal", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const baseline = 'model = "gpt-5.6-sol"\n';
+    const config = nativeConfig("browser-only");
+    const orphaned = installCodexInterruptHook(baseline, configPath, config).text;
+    writeFileSync(configPath, orphaned);
+
+    expect(existsSync(getCodexJournalPath())).toBeFalse();
+    expect(existsSync(getCodexJournalRecoveryPath())).toBeFalse();
+    expect(() => preflightCodexIntegration(config)).not.toThrow();
+
+    const reinstalled = installCodexIntegration(config);
+    const text = readFileSync(configPath, "utf8");
+
+    expect(reinstalled.active).toBeTrue();
+    expect(text.split("release the exact Responses request").length - 1).toBe(1);
+    expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });
+  });
+
+  test("isolates integration journals for multiple Codex homes sharing one runtime home", () => {
+    const root = join(tmpdir(), `codex-chatgpt-web-multi-home-${process.pid}-${Date.now()}-${Math.random()}`);
+    const appHome = join(root, "app");
+    const firstHome = join(root, "codex-a");
+    const secondHome = join(root, "codex-b");
+    mkdirSync(firstHome, { recursive: true });
+    mkdirSync(secondHome, { recursive: true });
+    roots.push(root);
+    process.env.CODEX_CHATGPT_WEB_HOME = appHome;
+
+    process.env.CODEX_HOME = firstHome;
+    writeFileSync(join(firstHome, "config.toml"), 'model = "gpt-5.6-sol"\n');
+    const firstConfig = nativeConfig("browser-only");
+    installCodexIntegration(firstConfig);
+    const firstJournal = getCodexJournalPath();
+    const firstRecovery = getCodexJournalRecoveryPath();
+    expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });
+
+    process.env.CODEX_HOME = secondHome;
+    writeFileSync(join(secondHome, "config.toml"), 'model = "gpt-5.6-sol"\n');
+    const secondConfig = nativeConfig("browser-only");
+    installCodexIntegration(secondConfig);
+    const secondJournal = getCodexJournalPath();
+    const secondRecovery = getCodexJournalRecoveryPath();
+
+    expect(secondJournal).not.toBe(firstJournal);
+    expect(secondRecovery).not.toBe(firstRecovery);
+    expect(existsSync(firstJournal)).toBeTrue();
+    expect(existsSync(firstRecovery)).toBeTrue();
+    expect(existsSync(secondJournal)).toBeTrue();
+    expect(existsSync(secondRecovery)).toBeTrue();
+    expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });
+
+    deactivateCodexIntegration();
+    expect(inspectCodexIntegration().active).toBeFalse();
+
+    process.env.CODEX_HOME = firstHome;
+    expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });
+    expect(readFileSync(join(firstHome, "config.toml"), "utf8")).toContain("openai_base_url");
+    expect(readFileSync(join(secondHome, "config.toml"), "utf8")).not.toContain("openai_base_url");
   });
 
   test("expands a configured tilde Codex home consistently with launcher paths", () => {

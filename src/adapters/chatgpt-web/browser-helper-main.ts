@@ -4,6 +4,7 @@ import { stdin, stderr, stdout } from "node:process";
 import type { CodexProviderConfig } from "../../types";
 import { ChatGptBrowserWorker, closeChatGptBrowserWorkers, type BrowserTurn } from "./browser-worker";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
+import { ChatGptAuthenticationRequiredError } from "../../chatgpt-session";
 import type { ChatGptWebCapabilities } from "./model";
 import { createProcessLineWriter } from "./process-line-writer";
 import { createBrowserHelperPromptSelection } from "./browser-helper-prompt-selection";
@@ -415,6 +416,11 @@ async function run(message: RunMessage): Promise<void> {
         errorType: error.errorType,
         code: error.code,
         retryable: error.retryable,
+      } : error instanceof ChatGptAuthenticationRequiredError ? {
+        status: 401,
+        errorType: "authentication_error",
+        code: "chatgpt_sign_in_required",
+        retryable: false,
       } : {}),
     });
   } finally {

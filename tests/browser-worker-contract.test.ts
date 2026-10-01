@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_SEND_CLICK_ACTION_TIMEOUT_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, normalizeHeadlessChromeUserAgent, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
@@ -311,6 +311,30 @@ test("a retained MCP conversation reuses its proven connector binding", () => {
   expect(chatGptConnectorAttachmentMode(true, false)).toBe("mention");
   expect(chatGptConnectorAttachmentMode(true, true)).toBe("retained");
   expect(chatGptConnectorAttachmentMode(false, false)).toBe("none");
+});
+
+test("headless Chrome identity normalizes only the browser product token", () => {
+  expect(normalizeHeadlessChromeUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.8037.59 Safari/537.36",
+  )).toBe(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.8037.59 Safari/537.36",
+  );
+  expect(normalizeHeadlessChromeUserAgent("Chrome/154.0.8037.59")).toBe("Chrome/154.0.8037.59");
+});
+
+test("automatic managed Chrome is truly headless and compaction respects Temporary Chat preference", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  expect(workerSource).toContain("headless: !this.config.headed");
+  expect(workerSource).toContain('["--headless=new", "--window-size=1280,720"]');
+  expect(workerSource).not.toContain('["--window-position=-32000,-32000", "--window-size=1280,720", "--start-minimized"]');
+  expect(workerSource).toContain('return userAgent.replace("HeadlessChrome/", "Chrome/");');
+  expect(workerSource).toContain('await session.send("Network.setUserAgentOverride", { userAgent });');
+  expect(workerSource).toContain("this.managedPageIdentitySessions.set(page, session);");
+  expect(workerSource).toContain('page.once("close", () => {');
+  expect(workerSource).toContain("return await this.newManagedPage(context);");
+  expect(workerSource).toContain("const replacement = await this.newManagedPage(context);");
+  expect(workerSource).toContain("const useSavedChatSurface = this.config.useSavedChats;");
+  expect(workerSource).not.toContain("this.config.useSavedChats || turn.compaction === true");
 });
 
 test("browser turns run concurrently up to the five-tab limit", async () => {
@@ -733,11 +757,11 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
       ? assistantLocator
       : hiddenLocator,
   } as unknown as Page;
-  let sendPresses = 0;
+  let sendClicks = 0;
   const sendButton = {
     waitFor: async () => {},
     isEnabled: async () => true,
-    press: async () => { sendPresses += 1; },
+    click: async () => { sendClicks += 1; },
   };
   const sendButtons = {
     filter() { return this; },
@@ -807,7 +831,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   );
 
   expect(evidence).toBe("mcp_tool_call");
-  expect(sendPresses).toBe(1);
+  expect(sendClicks).toBe(1);
   expect(domObservations).toBe(2);
   expect(recoveries).toBe(1);
   expect(lifecycle).toEqual(["activated", "submitted"]);
@@ -823,7 +847,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   }
 });
 
-test("Bigger Context send activation keeps the outer stage budget instead of restoring a nested 20-second timeout", async () => {
+test("Bigger Context send activation keeps a bounded click timeout under the outer stage budget", async () => {
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://multipart-send-budget-${Date.now()}-${Math.random()}`,
@@ -859,16 +883,13 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     isClosed: () => false,
     locator: () => hiddenLocator,
   } as unknown as Page;
-  let pressOptions: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number } | undefined;
+  let clickOptions: { noWaitAfter?: boolean; timeout?: number } | undefined;
   const sendButton = {
     waitFor: async () => {},
     isEnabled: async () => true,
-    press: async (
-      _key: string,
-      options?: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number },
-    ) => {
-      pressOptions = options;
-      if (options?.timeout !== 0) throw new Error("nested locator timeout replaced the outer stage budget");
+    click: async (options?: { noWaitAfter?: boolean; timeout?: number }) => {
+      clickOptions = options;
+      if (options?.timeout !== CHATGPT_SEND_CLICK_ACTION_TIMEOUT_MS) throw new Error("unexpected send click timeout");
     },
   };
   const sendButtons = {
@@ -892,8 +913,84 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     1_000,
     stageSignal => worker.sendAttachedPrompt(page, {}, undefined, stageSignal),
   )).resolves.toBe("user_turn");
-  expect(pressOptions).toMatchObject({ noWaitAfter: true, timeout: 0 });
-  expect(pressOptions?.signal).toBeInstanceOf(AbortSignal);
+  expect(clickOptions).toMatchObject({ noWaitAfter: true, timeout: CHATGPT_SEND_CLICK_ACTION_TIMEOUT_MS });
+});
+
+test("send activation falls back to Enter when the enabled send control times out without submission evidence", async () => {
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: "browser://send-click-timeout-" + Date.now() + "-" + Math.random(),
+    chatgptWeb: {
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: true,
+      storageStatePath: "/tmp/send-click-timeout-" + Date.now() + "-" + Math.random() + ".json",
+    },
+  };
+  const worker: any = ChatGptBrowserWorker.forProvider(provider);
+  const checkpoints: string[] = [];
+  const pressed: string[] = [];
+  let clickOptions: { noWaitAfter?: boolean; timeout?: number } | undefined;
+
+  const hiddenLocator = {
+    filter() { return this; },
+    count: async () => 0,
+    last() { return this; },
+    getByText() { return this; },
+    isVisible: async () => false,
+  };
+  const page = {
+    isClosed: () => false,
+    locator: () => hiddenLocator,
+  } as unknown as Page;
+
+  const timeout = new Error("send control remained non-actionable");
+  timeout.name = "TimeoutError";
+  const sendButton = {
+    isEnabled: async () => true,
+    click: async (options?: { noWaitAfter?: boolean; timeout?: number }) => {
+      clickOptions = options;
+      throw timeout;
+    },
+  };
+  const sendButtons = {
+    filter() { return this; },
+    count: async () => 1,
+    first: () => sendButton,
+  };
+  const composer = {
+    locator: () => ({
+      locator: (selector: string) => {
+        expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
+        return sendButtons;
+      },
+    }),
+    isEditable: async () => true,
+    press: async (key: string) => { pressed.push(key); },
+  };
+
+  worker.activeComposer = async () => composer;
+  worker.waitForSubmissionAcceptedWithRecovery = async () => "user_turn";
+
+  const baseline: any = { submittedText: "Responda apenas OK" };
+  const evidence = await worker.sendAttachedPrompt(
+    page,
+    baseline,
+    async (checkpoint: string) => { checkpoints.push(checkpoint); },
+  );
+
+  expect(evidence).toBe("user_turn");
+  expect(clickOptions).toMatchObject({
+    noWaitAfter: true,
+    timeout: CHATGPT_SEND_CLICK_ACTION_TIMEOUT_MS,
+  });
+  expect(pressed).toEqual(["Enter"]);
+  expect(checkpoints).toContain("send-click-timeout");
+  expect(checkpoints).toContain("send-click-timeout-keyboard-fallback");
+  expect(checkpoints).toContain("send-keyboard-fallback-activated");
+  expect(checkpoints).toContain("send-activated");
+  expect(baseline.sendActivated).toBeTrue();
 });
 
 test("two-part saved chats re-prove unchanged effort after the first message creates the conversation URL", async () => {
@@ -2490,7 +2587,9 @@ test("image attachment readiness uses exact file tiles and not localized remove-
       };
     },
     locator: (selector: string) => {
-      if (selector.startsWith(".composer-attachment-surface")) return {};
+      if (selector.startsWith(".composer-attachment-surface")) {
+        return { count: async () => 0 };
+      }
       expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
       return send;
     },
@@ -2975,11 +3074,20 @@ test("submission network observer tracks backend stream activity independently o
     requestId: "request-1",
     response: { status: 200 },
   });
+  const streamedAssistant = [
+    'data: {"message":{"author":{"role":"assistant"},"content":{"parts":["partial"]}}}',
+    "",
+    'data: {"message":{"author":{"role":"assistant"},"content":{"parts":["final transport answer"]}}}',
+    "",
+    "data: [DONE]",
+    "",
+    "",
+  ].join("\n");
   session.emit("Network.dataReceived", {
     requestId: "request-1",
     dataLength: 128,
     encodedDataLength: 128,
-    data: "",
+    data: Buffer.from(streamedAssistant, "utf8").toString("base64"),
   });
   expect(observer.networkSnapshot()).toMatchObject({
     requestSeen: true,
@@ -3001,6 +3109,7 @@ test("submission network observer tracks backend stream activity independently o
     failed: false,
   });
   expect(observer.networkIsLive(Date.now(), 1_000)).toBe(false);
+  expect(observer.completedAssistantText()).toBe("final transport answer");
   expect(responseProgress).toBe(4);
 
   // Start a fresh observation epoch so the aborted request is itself the primary request.

@@ -18,6 +18,8 @@ import {
 import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import { clearBrowserLoginStorageState } from "./browser-login";
+import { ChatGptAuthenticationRequiredError } from "./chatgpt-session";
+import { recoverNativeBrowserSession } from "./native-session-recovery";
 import type { AppConfig } from "./config";
 import { providerConfig } from "./config";
 import { AsyncEventQueue } from "./event-queue";
@@ -361,6 +363,19 @@ export interface ResponseRequestOptions {
   onAdapterEvent?: (event: AdapterEvent) => void;
   /** Bind the physical HTTP stream to the exact native Codex turn that owns it. */
   onTurnIdentity?: (identity: NativeCodexTurnIdentity) => void;
+  /**
+   * Refresh an expired managed-browser session. This is invoked at most once and only before
+   * any adapter event was emitted, so automatic recovery never replays accepted model work.
+   */
+  recoverSession?: (config: AppConfig) => Promise<unknown>;
+}
+
+function isRecoverableChatGptAuthenticationError(error: unknown): boolean {
+  return error instanceof ChatGptAuthenticationRequiredError
+    || (error instanceof ChatGptWebAdapterError
+      && error.status === 401
+      && error.errorType === "authentication_error"
+      && error.code === "chatgpt_sign_in_required");
 }
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
@@ -641,21 +656,51 @@ export async function responseRequest(
       headers: { "content-type": "application/json" },
     });
   }
-  const adapter = adapterFactory(provider);
+  let adapter = adapterFactory(provider);
   const queue = new AsyncEventQueue<AdapterEvent>();
   const abort = new AbortController();
   if (req.signal.aborted) abort.abort();
   else req.signal.addEventListener("abort", () => abort.abort(), { once: true });
   const run = async () => {
-    try {
-      await adapter.runTurn!(parsed, { headers: req.headers, abortSignal: abort.signal }, event => {
-        options.onAdapterEvent?.(event);
-        queue.push(event);
-      });
-    } catch (error) {
-      const event: AdapterEvent = { type: "error", message: error instanceof Error ? error.message : String(error) };
+    let emittedSemanticEvents = 0;
+    const emit = (event: AdapterEvent): void => {
+      // Heartbeats are transport liveness only. They do not prove that ChatGPT accepted,
+      // generated, or executed any model work, so they must not block a safe auth refresh.
+      if (event.type !== "heartbeat") emittedSemanticEvents += 1;
       options.onAdapterEvent?.(event);
       queue.push(event);
+    };
+    try {
+      let recovered = false;
+      for (;;) {
+        try {
+          await adapter.runTurn!(parsed, { headers: req.headers, abortSignal: abort.signal }, emit);
+          break;
+        } catch (error) {
+          const canRecover = !recovered
+            && emittedSemanticEvents === 0
+            && !abort.signal.aborted
+            && isRecoverableChatGptAuthenticationError(error)
+            && options.recoverSession !== undefined;
+          if (!canRecover) throw error;
+
+          recovered = true;
+          console.warn("[chatgpt-web] automatic_session_recovery_started");
+          await closeChatGptBrowserWorkers();
+          try {
+            await options.recoverSession!(config);
+          } catch (recoveryError) {
+            const detail = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+            throw new ChatGptAuthenticationRequiredError(
+              `The ChatGPT browser session expired and automatic recovery failed: ${detail}`,
+            );
+          }
+          adapter = adapterFactory(providerConfig(config));
+          console.warn("[chatgpt-web] automatic_session_recovery_completed");
+        }
+      }
+    } catch (error) {
+      emit({ type: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
       queue.close();
     }
@@ -709,7 +754,7 @@ export async function compactRequest(
   req: Request,
   config: AppConfig,
   adapterFactory: ChatGptWebAdapterFactory = createChatGptWebAdapter,
-  options: Pick<ResponseRequestOptions, "onTurnIdentity"> = {},
+  options: Pick<ResponseRequestOptions, "onTurnIdentity" | "recoverSession"> = {},
 ): Promise<Response> {
   const nativeRequest = req.clone();
   let raw: Record<string, unknown>;
@@ -828,6 +873,7 @@ export function startServer(
     fetchUpstream?: NativeFetch;
     adapterFactory?: ChatGptWebAdapterFactory;
     clearLoginState?: (config: Pick<AppConfig, "storageStatePath">) => void;
+    recoverSession?: (config: AppConfig) => Promise<unknown>;
   } = {},
 ): ReturnType<typeof Bun.serve> {
   if (config.purpose === "dev-harness") {
@@ -855,6 +901,15 @@ export function startServer(
     active_http_turns: httpTurns.count(),
     active_browser_turns: chatGptTurnSessions.activeCount() + (turnBroker?.externalOwnerActiveCount() ?? 0),
   });
+  const recoverSession = async (targetConfig: AppConfig): Promise<void> => {
+    const activeBrowserTurns = activity().active_browser_turns;
+    if (activeBrowserTurns > 1) {
+      throw new Error(
+        `Automatic ChatGPT session recovery was deferred because ${activeBrowserTurns - 1} other browser turn(s) are active.`,
+      );
+    }
+    await (dependencies.recoverSession ?? recoverNativeBrowserSession)(targetConfig);
+  };
   const controlAuthorized = (req: Request): boolean => {
     const header = req.headers.get("authorization") ?? "";
     const expected = Buffer.from(`Bearer ${config.controlToken}`);
@@ -867,6 +922,12 @@ export function startServer(
     idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
+      if (req.method === "GET" && url.pathname === "/auth/managed-login") {
+        return new Response(
+          `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar no ChatGPT</title><style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#fff;color:#111}.card{max-width:520px;padding:32px;text-align:center}.spinner{width:28px;height:28px;border:3px solid #ddd;border-top-color:#111;border-radius:50%;margin:0 auto 20px;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}h1{font-size:22px;margin:0 0 12px}p{line-height:1.5;color:#555}</style></head><body><main class="card"><div class="spinner"></div><h1>Continue no Brave</h1><p>O CodexNative abriu o ChatGPT no Brave. Conclua o login por lá. Esta etapa será concluída automaticamente quando a sessão for validada.</p></main></body></html>`,
+          { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+        );
+      }
       if (req.method === "GET" && url.pathname === "/healthz") {
         return Response.json({
           status: "ok",
@@ -1113,7 +1174,10 @@ export function startServer(
             new Request(req, { signal }),
             config,
             dependencies.adapterFactory,
-            { onTurnIdentity: bindIdentity },
+            {
+              onTurnIdentity: bindIdentity,
+              recoverSession,
+            },
           ),
           req.signal,
           process.platform,
@@ -1127,7 +1191,10 @@ export function startServer(
             new Request(req, { signal }),
             config,
             dependencies.adapterFactory,
-            { onTurnIdentity: bindIdentity },
+            {
+              onTurnIdentity: bindIdentity,
+              recoverSession,
+            },
           ),
           req.signal,
           process.platform,

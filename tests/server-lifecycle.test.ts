@@ -4,10 +4,12 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chatGptWebTraceId } from "../src/adapters/chatgpt-web";
+import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import { runStructuredCompactionOnce } from "../src/adapters/chatgpt-web/compaction-handoff";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, defaultConfig, providerConfig } from "../src/config";
+import { ChatGptAuthenticationRequiredError } from "../src/chatgpt-session";
 import { parseRequest } from "../src/responses/parser";
 import { compactRequest, HttpTurnCounter, responseRequest, routeChatGptWebRequest, startServer } from "../src/server";
 
@@ -378,6 +380,224 @@ test("native passthrough response and compaction requests expose their exact int
   });
   expect(boundCompactIdentity).toEqual(compactIdentity);
   expect(compact.status).toBe(502);
+});
+
+test("responseRequest refreshes a signed-out browser session once before any adapter event", async () => {
+  const config = defaultConfig("browser-only");
+  const turnId = "turn_auto_session_recovery";
+  const body = {
+    model: "chatgpt-web/high",
+    stream: false,
+    metadata: { turn_id: turnId, thread_id: "thread_auto_session_recovery" },
+    input: [{
+      type: "message",
+      id: "msg_auto_session_recovery",
+      role: "user",
+      content: [{ type: "input_text", text: "recover session" }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }],
+  };
+
+  let constructions = 0;
+  let recoveries = 0;
+  const observed: string[] = [];
+  const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }), config, () => {
+    constructions += 1;
+    const attempt = constructions;
+    return {
+      name: "session-recovery-test",
+      async runTurn(_parsed, _incoming, emit) {
+        if (attempt === 1) {
+          emit({ type: "heartbeat" });
+          throw new ChatGptAuthenticationRequiredError();
+        }
+        emit({ type: "tool_call_start", id: "call_recovered", name: "exec" });
+        emit({ type: "tool_call_delta", arguments: JSON.stringify({ input: "text('ok')" }) });
+        emit({ type: "tool_call_end" });
+        emit({ type: "done", endTurn: false });
+      },
+    };
+  }, {
+    rememberState: false,
+    onAdapterEvent: event => { observed.push(event.type); },
+    recoverSession: async () => { recoveries += 1; },
+  });
+
+  expect(response.status).toBe(200);
+  expect(constructions).toBe(2);
+  expect(recoveries).toBe(1);
+  expect(observed).toContain("done");
+  expect(observed).not.toContain("error");
+});
+
+test("responseRequest refreshes the structured 401 sign-in-required adapter error once", async () => {
+  const config = defaultConfig("browser-only");
+  const turnId = "turn_structured_auth_recovery";
+  const body = {
+    model: "chatgpt-web/high",
+    stream: false,
+    metadata: { turn_id: turnId, thread_id: "thread_structured_auth_recovery" },
+    input: [{
+      type: "message",
+      id: "msg_structured_auth_recovery",
+      role: "user",
+      content: [{ type: "input_text", text: "recover structured auth error" }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }],
+  };
+
+  let constructions = 0;
+  let recoveries = 0;
+  const observed: string[] = [];
+  const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }), config, () => {
+    constructions += 1;
+    const attempt = constructions;
+    return {
+      name: "structured-auth-recovery-test",
+      async runTurn(_parsed, _incoming, emit) {
+        if (attempt == 1) {
+          throw new ChatGptWebAdapterError(
+            "ChatGPT requested sign-in.",
+            {
+              status: 401,
+              errorType: "authentication_error",
+              code: "chatgpt_sign_in_required",
+              retryable: false,
+            },
+          );
+        }
+        emit({ type: "tool_call_start", id: "call_recovered_structured", name: "exec" });
+        emit({ type: "tool_call_delta", arguments: JSON.stringify({ input: "text('ok')" }) });
+        emit({ type: "tool_call_end" });
+        emit({ type: "done", endTurn: false });
+      },
+    };
+  }, {
+    rememberState: false,
+    onAdapterEvent: event => { observed.push(event.type); },
+    recoverSession: async () => { recoveries += 1; },
+  });
+
+  expect(response.status).toBe(200);
+  expect(constructions).toBe(2);
+  expect(recoveries).toBe(1);
+  expect(observed).toContain("done");
+  expect(observed).not.toContain("error");
+});
+
+test("responseRequest never replays a signed-out turn after any adapter event was emitted", async () => {
+  const config = defaultConfig("browser-only");
+  const turnId = "turn_no_replay_after_progress";
+  const body = {
+    model: "chatgpt-web/high",
+    stream: false,
+    metadata: { turn_id: turnId, thread_id: "thread_no_replay_after_progress" },
+    input: [{
+      type: "message",
+      id: "msg_no_replay_after_progress",
+      role: "user",
+      content: [{ type: "input_text", text: "do not replay" }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }],
+  };
+
+  let constructions = 0;
+  let recoveries = 0;
+  const observed: string[] = [];
+  const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }), config, () => {
+    constructions += 1;
+    return {
+      name: "no-replay-after-progress-test",
+      async runTurn(_parsed, _incoming, emit) {
+        emit({ type: "reasoning_raw_delta", text: "accepted work" });
+        throw new ChatGptAuthenticationRequiredError();
+      },
+    };
+  }, {
+    rememberState: false,
+    onAdapterEvent: event => { observed.push(event.type); },
+    recoverSession: async () => { recoveries += 1; },
+  });
+
+  expect(response.status).toBe(200);
+  expect(constructions).toBe(1);
+  expect(recoveries).toBe(0);
+  expect(observed).toContain("reasoning_raw_delta");
+  expect(observed).toContain("error");
+});
+
+test("startServer defers automatic session recovery while another browser turn is active", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const pending = new Promise<string>(() => {});
+  chatGptTurnSessions.clear();
+  for (let index = 0; index < 2; index += 1) {
+    chatGptTurnSessions.getOrCreate(
+      `recovery-concurrency-${index}`,
+      () => ({
+        mode: "read-only",
+        browser: pending,
+        physicalSettlement: pending.then(() => undefined, () => undefined),
+        trace: new ChatGptTraceFeed(),
+        text: new ChatGptTextFeed(),
+        cancel: () => {},
+      }),
+      `recovery-concurrency-trace-${index}`,
+      `recovery-concurrency-owner-${index}`,
+      `recovery-concurrency-turn-${index}`,
+      `recovery-concurrency-thread-${index}`,
+    );
+  }
+
+  let recoveries = 0;
+  const server = startServer(config, {
+    adapterFactory: () => ({
+      name: "recovery-concurrency-test",
+      async runTurn() {
+        throw new ChatGptAuthenticationRequiredError();
+      },
+    }),
+    recoverSession: async () => { recoveries += 1; },
+  });
+
+  const turnId = "turn_recovery_concurrency_request";
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "chatgpt-web/high",
+        stream: false,
+        metadata: { turn_id: turnId, thread_id: "thread_recovery_concurrency_request" },
+        input: [{
+          type: "message",
+          id: "msg_recovery_concurrency_request",
+          role: "user",
+          content: [{ type: "input_text", text: "do not disrupt active peer turns" }],
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(recoveries).toBe(0);
+    expect(await response.text()).toContain("automatic recovery failed");
+    expect(chatGptTurnSessions.activeCount()).toBe(2);
+  } finally {
+    chatGptTurnSessions.clear();
+    await server.stop(true);
+  }
 });
 
 test("authenticated Interrupt hook endpoint releases the exact routed Web turn", async () => {

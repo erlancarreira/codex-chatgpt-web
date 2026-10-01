@@ -160,6 +160,81 @@ test("daemon streams browser lifecycle through the real helper process", async (
   }
 }, 15_000);
 
+test("authentication-required errors retain structured 401 metadata across the real helper IPC", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-launcher-helper-auth-ipc-"));
+  roots.push(root);
+  const helper = join(root, "helper.ts");
+  writeFileSync(helper, `
+    import { ChatGptBrowserWorker } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url).href)};
+    import { ChatGptAuthenticationRequiredError } from ${JSON.stringify(new URL("../src/chatgpt-session.ts", import.meta.url).href)};
+    ChatGptBrowserWorker.prototype.run = async function() {
+      throw new ChatGptAuthenticationRequiredError();
+    };
+    await import(${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-helper-main.ts", import.meta.url).href)});
+  `, { mode: 0o700 });
+
+  const descriptorPath = join(root, "launcher.json");
+  writeFileSync(descriptorPath, JSON.stringify({
+    version: 3,
+    kind: LAUNCHER_BROWSER_HOST_KIND,
+    profile: "production",
+    pid: process.pid,
+    endpoint: "http://127.0.0.1:39011",
+    control: {
+      endpoint: "http://127.0.0.1:39012",
+      token: "launcher-control-token-auth-ipc-0123456789abcdef",
+    },
+    helper: { executable: process.execPath, script: helper },
+    partition: "persist:codex-web-gpt-chatgpt",
+    idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+    surfaceId: "launcher_surface_auth_ipc_012345",
+    surfaceTargets: { launcher_surface_auth_ipc_012345: "native-owned-target" },
+    createdAt: new Date().toISOString(),
+  }), { mode: 0o600 });
+
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2",
+    browserHost: "launcher",
+    browserHostDescriptorPath: descriptorPath,
+    browserHelperScriptPath: helper,
+    storageStatePath: join(root, "unused-state.json"),
+    chromeExecutablePath: join(root, "unused-chrome"),
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+    useSavedChats: false,
+  });
+  try {
+    let thrown: unknown;
+    try {
+      await client.run({
+        traceId: "auth_ipc_abcdef123456",
+        modelId: "gpt-5.6-sol",
+        reasoning: "high",
+        capabilities: {
+          localToolsEnabled: false,
+          solAvailable: true,
+          extraHighAvailable: false,
+          proAvailable: false,
+        },
+        prepare: async () => ({ text: "unused", images: [], release() {} }),
+        onTextDelta() {},
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ChatGptWebAdapterError);
+    expect(thrown).toMatchObject({
+      status: 401,
+      errorType: "authentication_error",
+      code: "chatgpt_sign_in_required",
+      retryable: false,
+    });
+  } finally {
+    await client.close();
+  }
+}, 15_000);
+
 test("accepted compaction retires through the helper as completed without hiding cancellations or errors", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-helper-compaction-end-"));
   roots.push(root);

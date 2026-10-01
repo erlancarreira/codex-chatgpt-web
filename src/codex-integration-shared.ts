@@ -255,12 +255,34 @@ export function getCodexModelsCachePath(): string {
   return join(getCodexHome(), "models_cache.json");
 }
 
+function pathIdentity(value: string): string {
+  const normalized = resolve(value);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function codexIntegrationJournalSuffix(): string | undefined {
+  const activeConfig = pathIdentity(getCodexConfigPath());
+  const defaultConfig = pathIdentity(join(homedir(), ".codex", "config.toml"));
+  if (activeConfig === defaultConfig) return undefined;
+  return createHash("sha256").update(activeConfig).digest("hex").slice(0, 16);
+}
+
 export function getCodexJournalPath(): string {
-  return join(getConfigDir(), "codex", "integration-journal.json");
+  const suffix = codexIntegrationJournalSuffix();
+  return join(
+    getConfigDir(),
+    "codex",
+    suffix ? `integration-journal.${suffix}.json` : "integration-journal.json",
+  );
 }
 
 export function getCodexJournalRecoveryPath(): string {
-  return join(getConfigDir(), "codex", "integration-journal.recovery.json");
+  const suffix = codexIntegrationJournalSuffix();
+  return join(
+    getConfigDir(),
+    "codex",
+    suffix ? `integration-journal.${suffix}.recovery.json` : "integration-journal.recovery.json",
+  );
 }
 
 export function routeUrl(config: AppConfig): string {
