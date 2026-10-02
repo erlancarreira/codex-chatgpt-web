@@ -4916,28 +4916,44 @@ export class ChatGptBrowserWorker {
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
     const input = page.locator('input[data-testid="upload-photos-input"], form[data-chatgpt-composer] input[type="file"][multiple]:not([accept])');
-    const attachmentSurfaces = composerForm.locator(".composer-attachment-surface");
+    // ChatGPT has moved attachment tiles outside the composer form in some UI revisions and
+    // may prefix/suffix their accessible name (for example, a localized "Remove ..." label).
+    // Capture page-wide baselines before upload so old conversation attachments cannot satisfy
+    // readiness for the files being attached to this physical message.
+    const attachmentSurfaces = page.locator(".composer-attachment-surface");
     const attachmentSurfaceBaseline = await attachmentSurfaces.count();
+    const attachmentEvidence = files.map(file => {
+      const name = JSON.stringify(file.name);
+      return page.getByRole("group", { name: file.name, exact: true })
+        .or(page.locator(`[aria-label*=${name}], [title*=${name}], [alt*=${name}], [data-filename=${name}], [data-file-name=${name}]`))
+        .or(page.getByText(file.name, { exact: true }));
+    });
+    const attachmentEvidenceBaselines = await Promise.all(attachmentEvidence.map(locator => locator.count()));
     await input.waitFor({ state: "attached", timeout: 20_000 });
     await input.setInputFiles(files);
-    try {
-      await Promise.all(files.map(file => (
-        composerForm.getByRole("group", { name: file.name, exact: true })
-          .or(composerForm.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${JSON.stringify(file.name)}]`))
-          .waitFor({ state: "visible", timeout: 60_000 })
-      )));
-    } catch {
-      const fallbackDeadline = Date.now() + 5_000;
-      while (Date.now() < fallbackDeadline) {
-        if (await attachmentSurfaces.count().catch(() => 0) >= attachmentSurfaceBaseline + files.length) return;
-        await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+    let accepted = false;
+    let evidenceCounts = attachmentEvidenceBaselines;
+    const attachmentDeadline = Date.now() + 60_000;
+    while (Date.now() < attachmentDeadline) {
+      evidenceCounts = await Promise.all(attachmentEvidence.map(locator => locator.count().catch(() => 0)));
+      if (evidenceCounts.every((count, index) => count > attachmentEvidenceBaselines[index]!)) {
+        accepted = true;
+        break;
       }
-      const attachmentCandidates = await composerForm.locator('.composer-attachment-surface, [data-testid*="attachment"], [data-testid*="file"]').evaluateAll(elements => elements.slice(0, 20).map(element => ({ tag: element.tagName.toLowerCase(), role: element.getAttribute("role"), ariaLabel: element.getAttribute("aria-label"), testId: element.getAttribute("data-testid"), text: (element.textContent ?? "").replace(/\\s+/g, " ").trim().slice(0, 160) }))).catch(() => []);
+      if (await attachmentSurfaces.count().catch(() => 0) >= attachmentSurfaceBaseline + files.length) {
+        accepted = true;
+        break;
+      }
+      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+    }
+    if (!accepted) {
       const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => []))
         .map(text => text.replace(/\s+/g, " ").trim())
         .filter(Boolean);
-      throw new Error(
-        `ChatGPT did not accept all prompt attachments`
+      const filenameEvidence = evidenceCounts.filter((count, index) => count > attachmentEvidenceBaselines[index]!).length;
+      const surfaceDelta = Math.max(0, await attachmentSurfaces.count().catch(() => 0) - attachmentSurfaceBaseline);
+      throw new ChatGptPromptAttachmentIntegrityError(
+        `ChatGPT did not accept all prompt attachments (expected=${files.length}, filenameEvidence=${filenameEvidence}, attachmentSurfaceDelta=${surfaceDelta})`
         + (alerts.length > 0 ? `: ${alerts.join(" | ")}` : ""),
       );
     }
@@ -4947,7 +4963,7 @@ export class ChatGptBrowserWorker {
       if (await send.isEnabled().catch(() => false)) return;
       await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
     }
-    throw new Error("ChatGPT accepted the prompt attachments but did not make the message ready to send");
+    throw new ChatGptPromptAttachmentIntegrityError("ChatGPT accepted the prompt attachments but did not make the message ready to send");
   }
 
   private async responseDomSnapshot(

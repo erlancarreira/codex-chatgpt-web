@@ -103,6 +103,20 @@ test("release installers resolve checksummed native launcher assets", () => {
   const packageSmoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
   assert.match(packageSmoke, /run\(installer, \["\/S", "\/currentuser"\]/);
   assert.match(packageSmoke, /reg\.exe[\s\S]*InstallLocation/);
+  assert.match(packageSmoke, /timeout:\s*300_000/);
+  assert.match(packageSmoke, /delete env\.ELECTRON_RUN_AS_NODE/);
+  assert.match(packageSmoke, /run\(command, args, \{ env, timeout: 180_000 \}\);/);
+});
+
+test("packaged launcher smoke validates runtime without waiting for ChatGPT browser readiness", () => {
+  const main = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
+  const smokeFlag = main.indexOf('const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");');
+  const guardedBrowserReady = main.indexOf("if (!launcherSmokeTest) await browserHost.ready();");
+  const smokeMarker = main.indexOf("Packaged launcher smoke test requires an absolute CODEX_WEB_GPT_SMOKE_FILE");
+  assert.ok(smokeFlag >= 0);
+  assert.ok(guardedBrowserReady > smokeFlag);
+  assert.ok(smokeMarker > guardedBrowserReady);
+  assert.equal((main.match(/browserHost\.ready\(\)/g) || []).length, 1);
 });
 
 test("packaged launcher owns a detached checksummed updater for every release platform", () => {
