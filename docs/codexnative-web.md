@@ -242,6 +242,7 @@ Exemplo de modelo:
 
 ```toml
 model = "chatgpt-web/gpt-5.6-sol"
+model_reasoning_effort = "high"
 ```
 
 Comandos:
@@ -308,6 +309,19 @@ Na compactação:
 6. o Codex continua com o contexto compactado.
 
 Isso evita que re-renderizações provisórias sejam interpretadas como alteração de texto já entregue ao cliente.
+
+### Perfil de modelo validado
+
+O perfil operacional recomendado e validado é:
+
+```toml
+model = "chatgpt-web/gpt-5.6-sol"
+model_reasoning_effort = "high"
+```
+
+A validação exige duas evidências: a configuração persistida em `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\config.toml`) e os turns recentes em `~/.codex-chatgpt-web/diagnostics/browser-turns/`.
+
+Aprovação exige `chatgpt-web/gpt-5.6-sol` + `high` nas duas evidências. Outro perfil em turn recente é divergência. Se runtime ou diagnósticos não puderem ser lidos, o resultado é inconclusivo, não aprovado.
 
 ## 17. Diagnósticos
 

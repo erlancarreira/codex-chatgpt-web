@@ -298,6 +298,7 @@ Um modelo pode aparecer, por exemplo, como:
 
 ```toml
 model = "chatgpt-web/gpt-5.6-sol"
+model_reasoning_effort = "high"
 ```
 
 Comandos úteis:
@@ -330,6 +331,19 @@ Durante uma compactação:
 6. a tarefa continua a partir desse estado.
 
 Isso evita reconexões causadas apenas por reescritas provisórias do renderer.
+
+## Modelo e reasoning recomendados
+
+Perfil validado atualmente no `~/.codex/config.toml`:
+
+```toml
+model = "chatgpt-web/gpt-5.6-sol"
+model_reasoning_effort = "high"
+```
+
+No Windows, use `%USERPROFILE%\.codex\config.toml`. A configuração persistida não prova sozinha o perfil efetivamente usado: valide também os turns recentes em `~/.codex-chatgpt-web/diagnostics/browser-turns/`.
+
+A verificação só está aprovada quando configuração e turns observados usam `chatgpt-web/gpt-5.6-sol` com reasoning effort `high`. Outro perfil em turn recente é divergência. Runtime ou diagnósticos indisponíveis tornam a verificação inconclusiva; não presuma sucesso.
 
 ## Diagnóstico
 
